@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>登录 · 照片墙</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: 'Segoe UI', 'PingFang SC', sans-serif;
+            background: #0d0d0d;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            color: #fff;
+        }
+        .login-container {
+            background: #1a1a1a;
+            padding: 40px 30px;
+            border-radius: 16px;
+            width: 360px;
+            box-shadow: 0 12px 40px rgba(0,0,0,0.6);
+            text-align: center;
+        }
+        .login-container h1 { font-size: 28px; font-weight: 600; margin-bottom: 8px; }
+        .login-container p.sub { color: #888; font-size: 14px; margin-bottom: 30px; }
+        .input-group { margin-bottom: 20px; text-align: left; }
+        .input-group label { display: block; font-size: 13px; color: #aaa; margin-bottom: 5px; }
+        .input-group input {
+            width: 100%; padding: 12px 14px; background: #2a2a2a;
+            border: 1px solid #3a3a3a; border-radius: 8px; color: #fff; font-size: 15px;
+            outline: none; transition: border 0.2s;
+        }
+        .input-group input:focus { border-color: #5a8aff; }
+        .login-btn {
+            width: 100%; padding: 14px; background: #5a8aff; border: none;
+            border-radius: 8px; color: #fff; font-size: 16px; font-weight: 600;
+            cursor: pointer; transition: background 0.2s; margin-top: 6px;
+        }
+        .login-btn:hover { background: #4a7aef; }
+        .error-msg { color: #ff6b6b; font-size: 14px; margin-top: 12px; min-height: 20px; }
+        .loading-msg { color: #8ab4ff; font-size: 14px; margin-top: 12px; min-height: 20px; display: none; }
+    </style>
+</head>
+<body>
+
+<div class="login-container">
+    <h1>📸 照片墙</h1>
+    <p class="sub">登录以进入</p>
+
+    <div class="input-group">
+        <label>用户名</label>
+        <input type="text" id="username" placeholder="请输入用户名" value="zmq">
+    </div>
+    <div class="input-group">
+        <label>密码</label>
+        <input type="password" id="password" placeholder="请输入密码" value="2008823">
+    </div>
+
+    <button class="login-btn" id="loginBtn">登 录</button>
+    <div class="error-msg" id="errorMsg"></div>
+    <div class="loading-msg" id="loadingMsg">⏳ 登录中...</div>
+</div>
+
+<script>
+    (function() {
+        // 如果已经登录，直接跳转
+        if (localStorage.getItem('photoWallLoggedIn') === 'true') {
+            window.location.href = 'index.html';
+            return;
+        }
+
+        const usernameInput = document.getElementById('username');
+        const passwordInput = document.getElementById('password');
+        const loginBtn = document.getElementById('loginBtn');
+        const errorMsg = document.getElementById('errorMsg');
+        const loadingMsg = document.getElementById('loadingMsg');
+
+        async function doLogin() {
+            const username = usernameInput.value.trim();
+            const password = passwordInput.value.trim();
+
+            if (!username || !password) {
+                errorMsg.textContent = '❌ 请输入用户名和密码';
+                return;
+            }
+
+            // 禁用按钮，显示加载
+            loginBtn.disabled = true;
+            errorMsg.textContent = '';
+            loadingMsg.style.display = 'block';
+
+            try {
+                const response = await fetch('/api/login.php', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    localStorage.setItem('photoWallLoggedIn', 'true');
+                    window.location.href = 'index.html';
+                } else {
+                    errorMsg.textContent = '❌ ' + (data.message || '登录失败');
+                    passwordInput.value = '';
+                    passwordInput.focus();
+                }
+            } catch (err) {
+                errorMsg.textContent = '❌ 网络错误，请检查服务器是否正常运行';
+            } finally {
+                loginBtn.disabled = false;
+                loadingMsg.style.display = 'none';
+            }
+        }
+
+        loginBtn.addEventListener('click', doLogin);
+        passwordInput.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') doLogin();
+        });
+        usernameInput.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') doLogin();
+        });
+    })();
+</script>
+
+</body>
+</html>

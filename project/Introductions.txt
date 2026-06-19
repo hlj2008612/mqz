@@ -1,0 +1,28 @@
+✏️ 通过改数值调整卡片数量
+打开 js/config.js，修改以下两个变量：
+
+javascript
+// 修改为你的实际图片张数
+const TOTAL_IMAGES = 20;
+
+// 修改网格列数/行数来改变卡片总数
+const WORLD_COLS = 20;  // 列数
+const WORLD_ROWS = 15;  // 行数
+卡片总数 = WORLD_COLS × WORLD_ROWS。建议保持在 300 以内以保证流畅度（比如 20×15=300）。
+
+💡 进阶调整（可选）
+调整卡片间距和大小范围：
+
+javascript
+// 卡片间距：越大卡片越分散
+const STEP = 300;
+
+// 在 renderer.js 中调整卡片最小/最大尺寸（第 8、9 行）
+// 修改 140 和 210 这两个数值
+let w = 140 + ((Math.sin(seed1) * 0.5 + 0.5) * (210 - 140));
+let h = 140 + ((Math.sin(seed2) * 0.5 + 0.5) * (210 - 140));
+调整 3D 缩放强度：
+
+javascript
+// 在 renderer.js 中找到下面这行，修改 1.2 这个数值
+const scale = 0.6 + ((maxDist - dist) / maxDist) * 1.2; // 改 1.2 为 1.5 或 0.8

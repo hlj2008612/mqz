@@ -1,0 +1,90 @@
+:root {
+    --bg: #0d0d0d;
+}
+
+body, html {
+    margin: 0;
+    height: 100%;
+    overflow: hidden;
+    background: var(--bg);
+}
+
+#canvas {
+    width: 100vw;
+    height: 100vh;
+    cursor: grab;
+    position: relative;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: none;
+    -webkit-tap-highlight-color: transparent;
+    overflow: hidden;
+}
+
+#canvas:active {
+    cursor: grabbing;
+}
+
+.item {
+    position: absolute;
+    border-radius: 16px;
+    overflow: hidden;
+    pointer-events: none;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+    transition: box-shadow 0.3s ease;
+    transform-origin: center center;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    backface-visibility: hidden;
+}
+
+.item img {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
+    transition: transform 0.4s ease;
+    flex-shrink: 0;
+}
+
+.item:hover img {
+    transform: scale(1.05);
+}
+
+.hint {
+    position: fixed;
+    bottom: 28px;
+    left: 50%;
+    transform: translateX(-50%);
+    pointer-events: none;
+    color: rgba(255, 255, 255, 0.4);
+    font-size: 13px;
+    letter-spacing: 0.6px;
+    z-index: 10;
+    transition: opacity 0.6s ease;
+    text-align: center;
+}
+
+.hint.fading {
+    opacity: 0.12;
+}
+
+.hint span {
+    display: inline-block;
+    animation: pulse-dot 2s ease-in-out infinite;
+}
+
+.hint span:nth-child(2) {
+    animation-delay: 0.3s;
+}
+
+.hint span:nth-child(3) {
+    animation-delay: 0.6s;
+}
+
+@keyframes pulse-dot {
+    0%, 100% { opacity: 0.3; }
+    50% { opacity: 0.85; }
+}

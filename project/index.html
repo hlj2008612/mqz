@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>3D 照片墙 · 全卡片预加载</title>
+    <link rel="stylesheet" href="css/style.css">
+    <!-- 在 <head> 中，所有链接和脚本的最前面 -->
+    <script>
+        // 登录检查：向后端询问是否已登录
+        (async function checkLogin() {
+            try {
+                const response = await fetch('/api/check_login.php');
+                const data = await response.json();
+                if (!data.loggedIn) {
+                    window.location.href = 'login.html';
+                }
+            } catch (e) {
+                // 如果后端无法访问，也跳转登录
+                window.location.href = 'login.html';
+            }
+        })();
+    </script>
+</head>
+<body>
+
+    <div id="canvas"></div>
+
+    <script src="js/config.js"></script>
+    <script src="js/utils.js"></script>
+    <script src="js/state.js"></script>
+    <script src="js/renderer.js"></script>
+    <script src="js/inertia.js"></script>
+    <script src="js/input.js"></script>
+    <script src="js/main.js"></script>
+</body>
+</html>
