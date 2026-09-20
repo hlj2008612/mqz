@@ -1,0 +1,11 @@
+/* src/assets/main.css */
+:root {
+    --bg: #0d0d0d;
+}
+
+/* 隐藏 Chrome/Safari/Edge 的滚动条 */
+::-webkit-scrollbar {
+    display: none;
+    width: 0;
+    height: 0;
+}
