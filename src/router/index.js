@@ -1,4 +1,5 @@
-import { createRouter, createWebHistory } from 'vue-router';
+// 注意这里：把 createWebHistory 改成了 createWebHashHistory
+import { createRouter, createWebHashHistory } from 'vue-router'; 
 import Login from '../views/Login.vue';
 import PhotoWall from '../views/PhotoWall.vue';
 
@@ -13,7 +14,7 @@ const routes = [
 ];
 
 const router = createRouter({
-  history: createWebHistory(),
+  history: createWebHashHistory(), // 这里和上面引入的名字对上了
   routes
 });
 
