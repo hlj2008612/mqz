@@ -14,10 +14,7 @@ const transitionRef = ref(null);
 // 接收 NavBar 发出的导航请求，统一触发转场动画
 const handleNavigate = (item) => {
   if (transitionRef.value) {
-    console.log("App.vue 成功调用转场:", item.title);
     transitionRef.value.play(item.title, item.color, item.path);
-  } else {
-    console.error("转场组件实例未挂载！");
   }
 };
 </script>

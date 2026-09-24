@@ -76,28 +76,34 @@ export async function buildCards(canvasEl) {
     setCanvas(canvasEl); // 确保 state 里有 canvas
     await initSizeCache();
 
+    const fragment = document.createDocumentFragment();
+
     for (let col = 0; col < WORLD_COLS; col++) {
         for (let row = 0; row < WORLD_ROWS; row++) {
             const card = document.createElement('div');
             card.className = 'item';
+
             const img = document.createElement('img');
             const imgIdx = ((col * 47 + row * 31) % TOTAL_IMAGES + TOTAL_IMAGES) % TOTAL_IMAGES + 1;
             img.src = `/images/thumbnails/${imgIdx}.webp`;
             img.decoding = 'async';
             img.loading = 'lazy';
             img.alt = '';
+
             card.appendChild(img);
-            canvasEl.appendChild(card);
+            fragment.appendChild(card);
             allCards.push({
                 el: card,
-                col: col,
-                row: row,
+                col,
+                row,
                 baseW: sizeCache[col][row].w,
                 baseH: sizeCache[col][row].h,
-                imgIdx: imgIdx,
+                imgIdx,
             });
         }
     }
+
+    canvasEl.appendChild(fragment);
 }
 
 // ================================================================
@@ -110,64 +116,57 @@ export function updateRender() {
     const centerY = state.viewH / 2;
     const maxDist = Math.hypot(centerX, centerY);
     const margin = 250;
-
     const buffer = 2;
     const startCol = Math.floor(-state.scrollX / currentStep + EPSILON) - buffer;
     const startRow = Math.floor(-state.scrollY / currentStep + EPSILON) - buffer;
     const colsNeeded = Math.ceil(state.viewW / currentStep) + buffer * 2;
     const rowsNeeded = Math.ceil(state.viewH / currentStep) + buffer * 2;
-
     const visibleSet = new Set();
+
     for (let i = 0; i < colsNeeded; i++) {
         for (let j = 0; j < rowsNeeded; j++) {
             const gridX = startCol + i;
             const gridY = startRow + j;
-            const worldCol = mod(gridX, WORLD_COLS);
-            const worldRow = mod(gridY, WORLD_ROWS);
-            visibleSet.add(`${worldCol},${worldRow}`);
+            visibleSet.add(`${mod(gridX, WORLD_COLS)},${mod(gridY, WORLD_ROWS)}`);
         }
     }
 
     for (const card of allCards) {
-        if (!visibleSet.has(`${card.col},${card.row}`)) {
+        const cardKey = `${card.col},${card.row}`;
+        if (!visibleSet.has(cardKey)) {
             card.el.style.display = 'none';
             continue;
         }
 
-        const targetScreenX = centerX;
-        const targetScreenY = centerY;
-
-        let bestGridX = null, bestGridY = null;
-        let bestDist = Infinity, bestDistY = Infinity;
+        let bestGridX = 0;
+        let bestGridY = 0;
+        let bestDist = Infinity;
+        let bestDistY = Infinity;
 
         for (let k = -2; k <= 2; k++) {
             const candidateGridX = card.col + k * WORLD_COLS;
             const cellX = candidateGridX * currentStep + state.scrollX;
-            const dist = Math.abs(cellX + currentStep / 2 - targetScreenX);
+            const dist = Math.abs(cellX + currentStep / 2 - centerX);
             if (dist < bestDist) {
                 bestDist = dist;
                 bestGridX = candidateGridX;
             }
         }
+
         for (let k = -2; k <= 2; k++) {
             const candidateGridY = card.row + k * WORLD_ROWS;
             const cellY = candidateGridY * currentStep + state.scrollY;
-            const dist = Math.abs(cellY + currentStep / 2 - targetScreenY);
+            const dist = Math.abs(cellY + currentStep / 2 - centerY);
             if (dist < bestDistY) {
                 bestDistY = dist;
                 bestGridY = candidateGridY;
             }
         }
 
-        const gridX = bestGridX;
-        const gridY = bestGridY;
-        const cellX = gridX * currentStep + state.scrollX;
-        const cellY = gridY * currentStep + state.scrollY;
-
-        const baseW = card.baseW;
-        const baseH = card.baseH;
-        const scaledW = Math.round(baseW * dynamicScale);
-        const scaledH = Math.round(baseH * dynamicScale);
+        const cellX = bestGridX * currentStep + state.scrollX;
+        const cellY = bestGridY * currentStep + state.scrollY;
+        const scaledW = Math.round(card.baseW * dynamicScale);
+        const scaledH = Math.round(card.baseH * dynamicScale);
         const posX = Math.round(cellX + (currentStep - scaledW) / 2);
         const posY = Math.round(cellY + (currentStep - scaledH) / 2);
 
@@ -177,19 +176,19 @@ export function updateRender() {
             continue;
         }
 
-        card.el.style.display = '';
-        card.el.style.width = scaledW + 'px';
-        card.el.style.height = scaledH + 'px';
-        card.el.style.left = posX + 'px';
-        card.el.style.top = posY + 'px';
-
+        const style = card.el.style;
         const cardCenterX = posX + scaledW / 2;
         const cardCenterY = posY + scaledH / 2;
         const dist = Math.hypot(cardCenterX - centerX, cardCenterY - centerY);
         const scale = 0.6 + ((maxDist - dist) / maxDist) * 1.2;
         const zIndex = Math.round(10000 - dist * 10);
 
-        card.el.style.transform = `scale(${scale.toFixed(3)})`;
-        card.el.style.zIndex = zIndex;
+        style.display = '';
+        style.width = `${scaledW}px`;
+        style.height = `${scaledH}px`;
+        style.left = `${posX}px`;
+        style.top = `${posY}px`;
+        style.transform = `scale(${scale.toFixed(3)})`;
+        style.zIndex = String(zIndex);
     }
 }
