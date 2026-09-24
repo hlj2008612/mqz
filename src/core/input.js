@@ -1,15 +1,6 @@
-// ================================================================
-//  交互事件
-// ================================================================
 import { state } from './state.js';
 import { WORLD_W, WORLD_H } from './config.js';
 import { stopInertia, startInertia, scheduleUpdate } from './inertia.js';
-
-let hintTimeout;
-
-function resetHintTimer() {
-    // 提示文字已移除，保留空函数避免调用报错
-}
 
 function getPos(e) {
     if (e.touches?.length) return { x: e.touches[0].clientX, y: e.touches[0].clientY };
@@ -72,10 +63,7 @@ function onPointerUp() {
 }
 
 function onWheel(e) {
-    if (e.ctrlKey || e.metaKey) {
-        e.preventDefault();
-        return;
-    }
+    if (e.ctrlKey || e.metaKey) { e.preventDefault(); return; }
     stopInertia();
     state.scrollX -= e.deltaX;
     state.scrollY -= e.deltaY;
@@ -95,14 +83,10 @@ function onKeyDown(e) {
             stopInertia();
             state.scrollX = WORLD_W / 2 - state.viewW / 2;
             state.scrollY = WORLD_H / 2 - state.viewH / 2;
-            resetHintTimer();
             break;
         default: handled = false;
     }
-    if (handled) {
-        scheduleUpdate();
-        e.preventDefault();
-    }
+    if (handled) { scheduleUpdate(); e.preventDefault(); }
 }
 
 function onResize() {
@@ -111,18 +95,11 @@ function onResize() {
     scheduleUpdate();
 }
 
-// 导出绑定和解绑函数，供 Vue 的 onMounted 和 onUnmounted 使用
 export function bindEvents(canvasEl) {
     canvasEl.addEventListener('mousedown', onPointerDown);
     window.addEventListener('mousemove', onPointerMove);
     window.addEventListener('mouseup', onPointerUp);
     window.addEventListener('mouseleave', onPointerUp);
-    
-    canvasEl.addEventListener('touchstart', onPointerDown, { passive: false });
-    window.addEventListener('touchmove', onPointerMove, { passive: false });
-    window.addEventListener('touchend', onPointerUp);
-    window.addEventListener('touchcancel', onPointerUp);
-    
     canvasEl.addEventListener('wheel', onWheel, { passive: false });
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('resize', onResize);
@@ -133,12 +110,6 @@ export function unbindEvents(canvasEl) {
     window.removeEventListener('mousemove', onPointerMove);
     window.removeEventListener('mouseup', onPointerUp);
     window.removeEventListener('mouseleave', onPointerUp);
-    
-    canvasEl.removeEventListener('touchstart', onPointerDown);
-    window.removeEventListener('touchmove', onPointerMove);
-    window.removeEventListener('touchend', onPointerUp);
-    window.removeEventListener('touchcancel', onPointerUp);
-    
     canvasEl.removeEventListener('wheel', onWheel);
     window.removeEventListener('keydown', onKeyDown);
     window.removeEventListener('resize', onResize);
