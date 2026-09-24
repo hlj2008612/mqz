@@ -7,10 +7,10 @@ import Music from '../views/Music.vue';   // 新增
 
 const routes = [
   { path: '/login', name: 'Login', component: Login },
-  { path: '/', name: 'Home', component: Home },
+  { path: '/', name: 'Home', component: Home, meta: { requiresAuth: true } },
   { path: '/wall', name: 'PhotoWall', component: PhotoWall, meta: { requiresAuth: true } },
-  { path: '/cinema', name: 'Cinema', component: Cinema }, // 新增
-  { path: '/music', name: 'Music', component: Music }      // 新增
+  { path: '/cinema', name: 'Cinema', component: Cinema, meta: { requiresAuth: true } },
+  { path: '/music', name: 'Music', component: Music, meta: { requiresAuth: true } }
 ];
 
 const router = createRouter({
