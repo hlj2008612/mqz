@@ -22,7 +22,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted, watch } from 'vue';
+import { ref, onMounted, onUnmounted, watch, nextTick } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
 const emit = defineEmits(['navigate']);
@@ -41,22 +41,22 @@ const navItems = [
 
 const updatePill = () => {
   const activeEl = document.querySelector('.nav-link.active');
-  if (activeEl) {
-    pillStyle.value = {
-      width: `${activeEl.offsetWidth}px`,
-      transform: `translateX(${activeEl.offsetLeft}px)`
-    };
-  }
+  if (!activeEl) return;
+
+  pillStyle.value = {
+    width: `${activeEl.offsetWidth}px`,
+    transform: `translateX(${activeEl.offsetLeft}px)`
+  };
 };
 
-// 监听路由变化：只有路由真的变了，才更新导航状态和胶囊位置
-watch(() => route.path, (newPath) => {
+watch(() => route.path, async (newPath) => {
   currentPath.value = newPath;
-  setTimeout(updatePill, 100); // 等待 DOM 更新后移动胶囊
+  await nextTick();
+  requestAnimationFrame(updatePill);
 });
 
 onMounted(() => {
-  updatePill();
+  requestAnimationFrame(updatePill);
   window.addEventListener('resize', updatePill);
 });
 
