@@ -1,0 +1,56 @@
+# ================================================================
+#  public/_headers —— Netlify / Cloudflare Pages 语法的缓存与安全策略
+#  ----------------------------------------------------------------
+#  ⚠️ 真实部署目标是 GitHub Pages（见 public/CNAME: zmq-hlj.ccwu.cc），
+#     而 GitHub Pages **完全忽略 _headers 文件**。因此本文件在该部署下
+#     不会生效，它的价值是：一旦迁到 Netlify / Cloudflare Pages / Vercel，
+#     无需改动即可获得正确的缓存策略。
+#
+#     GitHub Pages 上实际生效的缓存行为（无法用配置文件覆盖）：
+#       - 所有资源 Cache-Control: max-age=600（10 分钟）
+#       - 图片资源 max-age=600，由 Fastly CDN 缓存
+#     应对方式见 README.md 的 “Build & Deploy” 一节：
+#     产物带内容哈希（vite.config.js 的 [hash]），10 分钟到期后重新校验
+#     也只会命中同名文件，不会出现旧代码引用新文件名的问题。
+#
+#  语法说明：一条规则行（/path 或 /*），随后是缩进的 Header: value 行。
+# ================================================================
+
+/*
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: SAMEORIGIN
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: geolocation=(), microphone=(), camera=(), payment=()
+  Cross-Origin-Opener-Policy: same-origin
+
+# 带内容哈希的构建产物：内容变化必然换文件名，可永久强缓存
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# public/ 下原样拷贝的静态资源（favicon / icons）不带哈希，给较短缓存
+/favicon.svg
+  Cache-Control: public, max-age=604800
+
+/icons.svg
+  Cache-Control: public, max-age=604800
+
+# 缩略图：照片墙首屏真正的载荷，缓存久一点
+/images/thumbnails/*
+  Cache-Control: public, max-age=2592000, stale-while-revalidate=86400
+
+# 1600px 中图（当前未被代码引用，保留策略以备启用）
+/images/full/*
+  Cache-Control: public, max-age=2592000, stale-while-revalidate=86400
+
+# 注：原图 /images/zmq/* 已移出 public/（现存于仓库 assets-src/），不参与发布，
+#     因此这里不再有对应规则。
+
+# HTML 必须短缓存或每次校验，否则新版本发不出去
+/
+  Cache-Control: public, max-age=0, must-revalidate
+
+/index.html
+  Cache-Control: public, max-age=0, must-revalidate
+
+/CNAME
+  Cache-Control: public, max-age=604800
