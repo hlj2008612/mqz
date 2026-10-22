@@ -195,7 +195,7 @@
       :aria-label="'照片 ' + padId(activeCard.uid) + ' 预览'"
       :style="popoverStyle"
       @mouseenter="onCardEnter"
-      @mouseleave="onAvatarLeave(false)"
+      @mouseleave="onAvatarLeave(false, true)"
       @wheel="onPopoverWheel"
       @click.stop
       @animationend="onPopoverAnimEnd"
@@ -1262,6 +1262,11 @@ function clearCloseTimer() {
  * @param {object} card 卡片数据
  */
 function openPreview(anchor, card) {
+  // B3：锚点必须仍在文档里。跨断点重排会销毁重建 .card-shell，
+  // 而 AVATAR_OPEN_DELAY(255ms) 的定时器可能在重建之后才到点：
+  // 此时 getBoundingClientRect() 全 0，浮层会被定位到左上角，
+  // 且锚点已脱离文档 ⇒ 永远收不到 mouseleave ⇒ 浮层永久停留。
+  if (!anchor || !anchor.isConnected) return;
   closeProbeCount = 0;   // 新一轮悬停，重排计数归零
   clearCloseTimer();
   // 顺序：先关掉上一张（动画会走 closing，但新弹层直接替换 ref），再设置新锚点。
@@ -1288,6 +1293,9 @@ function openPreview(anchor, card) {
     const el = popoverRef.value;
     // 判空之后再读尺寸（el 可能已因快速关闭/路由卸载而变 null）
     if (!el || !activeCard.value || !popoverAnchor || popoverAnim.value === 'closing') return;
+    // B3：锚点可能在 255ms 悬停延迟期间被跨断点重排销毁重建，此时 rect 全 0，
+    // 会把浮层定位到左上角且再也关不掉（浮层挂 body、锚点已脱离文档）。
+    if (!popoverAnchor.isConnected) return;
     const rect = popoverAnchor.getBoundingClientRect();
     const size = measurePopoverSize();
     Object.assign(popoverState, computePopoverPosition(rect, {
@@ -1368,6 +1376,8 @@ let escSuppressedAnchor = null;
 /** 最近一次指针位置，关闭前用它判断指针是否还在头像与弹层之间的空隙里。 */
 let lastPointerX = 0;
 let lastPointerY = 0;
+/** 最近一次指针移动的时间戳（performance.now）。用于区分「主动移入浮层」与「浮层飘到指针底下」。 */
+let lastPointerMoveAt = 0;
 /**
  * 是否真的收到过指针位置。
  * 【为什么需要】lastPointerX/Y 的初值是 0,0，而 inRect 有 8px 容差，
@@ -1409,8 +1419,23 @@ function onAvatarEnter(e, card) {
   }, AVATAR_OPEN_DELAY);
 }
 
-/** 指针进入弹层本体：取消关闭倒计时（安全区）。 */
+/**
+ * 指针进入弹层本体：取消关闭倒计时（安全区）。
+ *
+ * 【B1/B4：必须区分「主动移入」与「被动获得」】
+ * 旧实现无条件取消 hoverCloseTimer，于是只要浮层与指针有过几何重叠，
+ * 关闭链就彻底断掉（实测「滚到页面底部也关不掉」）。
+ * 判据：指针若在最近 PASSIVE_ENTER_MS 内【没有移动过】，说明它不是用户移进来的，
+ * 而是浮层自己飘到了指针底下（滚动、翻转、动画导致）—— 这种情形不能取消倒计时，
+ * 否则每次几何回归都会退化成永不关闭。
+ * 主动移入时鼠标一定在动，mouseenter 与最近一次 pointermove 几乎同帧，差值极小。
+ */
+const PASSIVE_ENTER_MS = 100;
 function onCardEnter() {
+  const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+  const activelyMoved = lastPointerMoveAt > 0 && (now - lastPointerMoveAt) <= PASSIVE_ENTER_MS;
+  // 被动获得（浮层飘到指针底下）：不取消关闭倒计时，让 maybeCloseByPointer 继续裁决。
+  if (!activelyMoved) return;
   if (hoverCloseTimer) { clearTimeout(hoverCloseTimer); hoverCloseTimer = 0; }
   if (hoverOpenTimer) { clearTimeout(hoverOpenTimer); hoverOpenTimer = 0; }
 }
@@ -1565,12 +1590,16 @@ function onPopoverTouchEnd() {
  * 若 blur 也走 220ms 延迟关闭，键盘用户看到的只是弹层一闪而过。
  * 所以 blur 走独立分支：只在焦点既不在头像也不在弹层里时才关。
  */
-function onAvatarLeave(viaBlur = false) {
-  // 指针离开头像/弹层即解除 Esc 抑制，下次悬停恢复正常弹出
-  escSuppressedAnchor = null;
+function onAvatarLeave(viaBlur = false, viaPopover = false) {
   // 只认严格的 true：@mouseleave="onAvatarLeave" 这种写法会把 MouseEvent
   // 当参数传进来，事件对象是 truthy，会被误判成 blur 分支（本轮真踩过）。
   const isBlur = viaBlur === true;
+  // 【B2：Esc 抑制只能由「离开头像」解除，不能被浮层的 mouseleave 清掉】
+  // 本函数同时挂在头像(:98) 与浮层(:198) 上，旧实现在第一行无条件清空，
+  // 等于把「离开浮层」当成「离开头像」：Esc 关闭后指针还在头像上时，
+  // 只要浮层淡出触发一次 mouseleave，抑制就被解除，浮层立刻自己弹回来。
+  // 判据：浮层自己发起的调用传入 viaPopover，此时不动抑制标记。
+  if (viaPopover !== true) escSuppressedAnchor = null;
   if (hoverOpenTimer) { clearTimeout(hoverOpenTimer); hoverOpenTimer = 0; }
   if (hoverCloseTimer) { clearTimeout(hoverCloseTimer); hoverCloseTimer = 0; }
 
@@ -1656,11 +1685,12 @@ function maybeCloseByPointer() {
   closeProbeCount = 0;
   closePreview();
 }
-/** 全局记录指针位置（只在资料卡打开期间需要，开销极小）。 */
+/** 全局记录指针位置与时间戳（只在资料卡打开期间需要，开销极小）。 */
 function trackPointer(e) {
   pointerKnown = true;
   lastPointerX = e.clientX;
   lastPointerY = e.clientY;
+  lastPointerMoveAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
 }
 
 /**
