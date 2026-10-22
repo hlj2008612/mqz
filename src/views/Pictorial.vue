@@ -829,14 +829,49 @@ onUpdated(() => {
   if (!activeCard.value) return;
   const el = popoverRef.value;
   if (!el) return;
-  if (el.style.top !== scrollAppliedTop + 'px') el.style.top = scrollAppliedTop + 'px';
-  if (el.style.left !== scrollAppliedLeft + 'px') el.style.left = scrollAppliedLeft + 'px';
+  // 无条件写回：patch 是低频事件（开/关/换卡），而「比较后再写」会被 CSS 序列化坑到 ——
+  // '46px 0px' 读回来是 '46px'、'0px 0px' 读回来是 '0px'，y 为 0 时判断恒真、
+  // 反而每次都写一次。同值赋值代价近乎为零，直接写更可靠。
+  writePopoverOffset(el, scrollAppliedTop, scrollAppliedLeft);
 });
 
-const popoverStyle = computed(() => ({
-  top: popoverState.top + 'px',
-  left: popoverState.left + 'px',
-}));
+/*
+ * 【定位只写一个属性：translate】
+ * 参考站实测：位置由内联 transform: translate(x,y) 逐帧承担，top/left 恒为 0。
+ * 我方原先逐帧写 top/left（布局属性），每帧强制布局；弹层带 backdrop-filter，
+ * 布局一变模糊背景就要重新采样，滚动时弹层总比页面慢半拍。
+ * translate 是合成层属性、不参与布局，机制与参考站等价。
+ * 不能用 transform 承载位置：它已被入场/出场的 scale + translateY 占用。
+ * 不支持 translate 的浏览器由下方 supportsTranslateProp() 回退到 top/left。
+ */
+let translatePropSupported = null;
+function supportsTranslateProp() {
+  if (translatePropSupported !== null) return translatePropSupported;
+  translatePropSupported = typeof CSS !== 'undefined'
+    && typeof CSS.supports === 'function'
+    && CSS.supports('translate', '1px 1px');
+  return translatePropSupported;
+}
+
+/**
+ * 把浮层位置写进 DOM 的唯一入口。
+ * 所有写位置的地方都必须走这里，否则会出现 top/left 与 translate 两套写法并存、
+ * 一半位置生效一半不生效的错乱。
+ */
+function writePopoverOffset(el, top, left) {
+  if (supportsTranslateProp()) {
+    el.style.translate = `${left}px ${top}px`;
+  } else {
+    el.style.top = `${top}px`;
+    el.style.left = `${left}px`;
+  }
+}
+
+const popoverStyle = computed(() => (
+  supportsTranslateProp()
+    ? { translate: `${popoverState.left}px ${popoverState.top}px` }
+    : { top: popoverState.top + 'px', left: popoverState.left + 'px' }
+));
 
 /**
  * 锚点与弹层之间的间距（参考站实测 22px）。
@@ -1080,13 +1115,11 @@ function applyScrollShift() {
   const vwNow = typeof window === 'undefined' ? 1440 : window.innerWidth;
   if (vwNow <= 640) return;
   // 直接写 DOM，绕开 Vue 的响应式调度（见 scrollAppliedTop 的说明）。
-  if (nextTop !== scrollAppliedTop) {
+  // 只在值真的变了才写；写的是 translate（不触发布局），见 writePopoverOffset。
+  if (nextTop !== scrollAppliedTop || nextLeft !== scrollAppliedLeft) {
     scrollAppliedTop = nextTop;
-    el.style.top = nextTop + 'px';
-  }
-  if (nextLeft !== scrollAppliedLeft) {
     scrollAppliedLeft = nextLeft;
-    el.style.left = nextLeft + 'px';
+    writePopoverOffset(el, nextTop, nextLeft);
   }
 }
 
@@ -1101,8 +1134,7 @@ function syncPopoverDom() {
   scrollAppliedLeft = popoverState.left;
   const el = popoverRef.value;
   if (!el) return;
-  el.style.top = scrollAppliedTop + 'px';
-  el.style.left = scrollAppliedLeft + 'px';
+  writePopoverOffset(el, scrollAppliedTop, scrollAppliedLeft);
 }
 
 /** 当前是否处于 reduced-motion：动画要按参考站原值放行，但位移/缩放要去掉。 */
@@ -2407,6 +2439,20 @@ columns.value = assignColumns(columnCount.value);
   /* 盒子模型：宽 320 是【含边框】的总宽，与脚本里的 POPOVER_PHOTO_WIDTH 一致 */
   box-sizing: border-box;
   position: fixed;
+  /*
+   * 【位置由独立的 translate 属性承担，不再逐帧写 top/left】
+   * 参考站实测：外层包裹节点是 position:fixed + top:0 + left:0，
+   * 位置完全由内联 transform: translate(x,y) 承担，滚动时逐帧只写 transform。
+   * 我方原先逐帧写 top/left —— 这两个是布局属性，每帧都会强制布局；
+   * 弹层又带 backdrop-filter，布局一变模糊背景就要重新采样，
+   * 于是滚动时弹层总比页面慢半拍，手感发涩。
+   * 改用 translate：合成层属性，不触发布局，与参考站机制等价。
+   * 不用 transform 是因为它已被入场/出场的 scale + translateY 占用；
+   * 两者是不同的 CSS 属性，并存且互不覆盖。
+   * 不支持 translate 的老浏览器由 writePopoverOffset() 回退到 top/left。
+   */
+  top: 0;
+  left: 0;
   z-index: 2000;
   width: 320px;
   border-radius: 16px;
