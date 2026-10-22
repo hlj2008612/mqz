@@ -400,7 +400,11 @@ function assignColumns(count) {
   if (!cards.length || count <= 0) return buckets;
 
   const totals = new Array(count).fill(0);
-  const columnWidth = gridRef.value?.firstElementChild?.clientWidth || 262;
+  // 【取卡片实宽，不是列的 clientWidth】列上有 padding-left: 1rem（窄屏 0.5rem），
+  // clientWidth 含 padding，比卡片宽约 16px（桌面 5 列时 278 vs 262）。
+  // 按含 padding 的宽度估会高估图片高度约 6%，且误差随 1/ratio 放大 ——
+  // 横图误差小、竖图误差大，正好和「竖图更高」的方向叠加。
+  const columnWidth = gridRef.value?.querySelector('.card-shell')?.clientWidth || 262;
 
   for (const card of cards) {
     let target = 0;
@@ -518,7 +522,16 @@ function observeCards() {
 /* --------------------------------------------------------- 布局调度 */
 
 /** 重新分配并（必要时）重新渲染，然后实测高度、修正分配、重新观察。 */
-
+/**
+ * 重新分配并（必要时）重新渲染，然后实测高度、修正分配、重新观察。
+ *
+ * 【微任务契约，改动前必读】这个函数里两处 `await nextTick()` 都必须在微任务内结算，
+ * 中间那次「用估算值分配的列」才不会上屏被看见。Vue 的 nextTick 在浏览器里走微任务，
+ * 而微任务会在本次绘制之前全部排空，所以中间态是无形的。
+ * 【不要改成等一帧】若把 `await nextTick()` 换成 `await new Promise(r => requestAnimationFrame(r))`
+ * （仓库里常见的「等一帧」写法），中间那次错误分配就会渲染出来，变成肉眼可见的整列跳动。
+ * 同理，onResize 里列数变化时先 measured.clear()，避免拿跨列宽的过期高度做第一次分配。
+ */
 async function rebuild() {
   const count = columnCount.value;
   const next = assignColumns(count);
@@ -556,6 +569,11 @@ function onResize() {
     const next = getColumnCount(window.innerWidth);
     if (next === columnCount.value) return;
     columnCount.value = next;
+    // 【必须清空 measured】它是 uid -> px，不含列宽维度。列数变了列宽必然变，
+    // 旧高度全部失效。不清就会先拿过期值分一次列，虽然随后会被实测纠正，
+    // 但那依赖 rebuild() 里两次 await nextTick() 都是微任务（中间态不上屏）。
+    // 把失效数据挡在入口，比依赖那个隐式契约安全。
+    measured.clear();
     rebuild();
   });
 }
