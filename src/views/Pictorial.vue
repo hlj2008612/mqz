@@ -60,7 +60,13 @@
               @mouseleave="onTiltLeave"
             >
               <article class="card-glass">
-                <div class="card-media">
+                <!--
+                  高度由这张图自己的宽高比决定（内联 aspect-ratio），
+                  所以 16:9 的横构图会矮、9:16 的竖构图会高 —— 瀑布流的参差感就来自这里。
+                  w/h 取自清单里缩略图的真实像素，图片进 DOM 之前容器就已占好高度，
+                  不会出现「先按固定高度铺好、图片加载后再跳一下」。
+                -->
+                <div class="card-media" :style="{ aspectRatio: card.w + ' / ' + card.h }">
                   <img
                     :src="card.src"
                     alt="写真"
@@ -362,8 +368,18 @@ const measured = new Map();
  */
 const CHROME_ESTIMATE = 104;
 
-/** 单张卡片的估算高度：图片是 1:1 正方形，高度 = 列宽；再加固定装饰高度。 */
-const estimateHeight = (columnWidth) => columnWidth + CHROME_ESTIMATE;
+/**
+ * 单张卡片的估算高度：图片高度 = 列宽 / 宽高比（列宽 / (w/h) = 列宽 × h/w），
+ * 再加固定的装饰高度（作者行 + 分隔线 + 正文区）。
+ *
+ * 【为什么必须按比例算】卡片高度不再统一，若仍用「列宽 + 装饰」估算，
+ * 贪心分配会把 16:9 的横图当成和 9:16 的竖图一样高，
+ * 列高极差从估算阶段就偏了，实测纠正后又要整体重排一次（可见的跳动）。
+ */
+const estimateHeight = (columnWidth, card) => {
+  const ratio = card && card.w > 0 && card.h > 0 ? card.w / card.h : 0.75;
+  return columnWidth / ratio + CHROME_ESTIMATE;
+};
 
 /**
  * 贪心平衡分配：按原始顺序逐张放入【当前累计高度最短】的列。
@@ -384,7 +400,7 @@ function assignColumns(count) {
   if (!cards.length || count <= 0) return buckets;
 
   const totals = new Array(count).fill(0);
-  const fallback = estimateHeight(gridRef.value?.firstElementChild?.clientWidth || 262);
+  const columnWidth = gridRef.value?.firstElementChild?.clientWidth || 262;
 
   for (const card of cards) {
     let target = 0;
@@ -392,7 +408,7 @@ function assignColumns(count) {
       if (totals[i] < totals[target]) target = i;
     }
     buckets[target].push(card);
-    totals[target] += measured.get(card.uid) || fallback;
+    totals[target] += measured.get(card.uid) || estimateHeight(columnWidth, card);
   }
   return buckets;
 }
@@ -502,6 +518,7 @@ function observeCards() {
 /* --------------------------------------------------------- 布局调度 */
 
 /** 重新分配并（必要时）重新渲染，然后实测高度、修正分配、重新观察。 */
+
 async function rebuild() {
   const count = columnCount.value;
   const next = assignColumns(count);
@@ -2258,7 +2275,12 @@ columns.value = assignColumns(columnCount.value);
   overflow: hidden;
   /* 参考站 .image-glow 的 contain 是 content */
   contain: content;
-  aspect-ratio: 1 / 1;
+  /*
+   * 【高度自适应】不再固定 1:1 —— 真实宽高比由模板内联到 style 上，
+   * 这里只在清单条目缺 w/h 时兜底（比例取照片常见的 3:4）。
+   * 改成固定值会让 23 张图全部等高，整页看起来像表格而不是瀑布流。
+   */
+  aspect-ratio: 3 / 4;
   background: transparent;
   border-radius: 14px 14px 0 0;
 }
