@@ -214,7 +214,10 @@
       -->
       <div
         class="card-popover-photo"
-        :style="{ aspectRatio: activeCard.fw + ' / ' + activeCard.fh }"
+        :style="{
+          aspectRatio: activeCard.fw + ' / ' + activeCard.fh,
+          maxHeight: popoverState.photoHeight ? popoverState.photoHeight + 'px' : null,
+        }"
       >
         <img
           :src="activeCard.full"
@@ -567,9 +570,7 @@ onUnmounted(() => {
   popoverState.align = 'start';
   popoverState.top = 0;
   popoverState.left = 0;
-  popoverState.clamped = false;
-  popoverState.minTop = 0;
-  popoverState.maxTop = 0;
+  popoverState.photoHeight = 0;
 
   if (rafId) cancelAnimationFrame(rafId);
   rafId = 0;
@@ -809,10 +810,10 @@ const popoverState = reactive({
   align: 'start',
   top: 0,
   left: 0,
-  // 「两侧都不够、已钳进视口」标记与钳制区间，滚动跟随要用（见 computePopoverPosition）。
-  clamped: false,
-  minTop: 0,
-  maxTop: 0,
+  // 照片区高度（由 measurePopoverSize 的预算算出），模板绑定到 max-height。
+  // 【为什么必须由 JS 决定而不是纯 CSS】预算依赖「两侧空间的最坏情况」，
+  // 而 CSS 拿不到锚点位置；只有 JS 知道当前视口能给出多少。
+  photoHeight: 0,
 });
 
 /**
@@ -903,19 +904,16 @@ const POPOVER_PHOTO_WIDTH = 320;
  * 否则算出的总高比实际少这一截，翻到锚点上方时会压到锚点上。
  */
 const POPOVER_FOOT_HEIGHT = 52;
+/**
+ * 浮层最小可用高度（px）= 信息条 52 + 边框 2 + 照片至少留 120。
+ * 【为什么需要它】方案 A 让高度服从「所在一侧预算」hMax = (vh-186)/2，
+ * 但视口极矮时（手机横屏 844x390，hMax 只有 102px）预算会小于最小可用高度。
+ * 此时只能允许高度突破预算、接受浮层与锚点重叠 —— 因为照片压到 48px 已无意义。
+ * 换言之：不重叠这个不变量只在「预算 >= POPOVER_MIN_HEIGHT」时成立，这里如实写出边界。
+ */
+const POPOVER_MIN_HEIGHT = POPOVER_FOOT_HEIGHT + 2 + 120;
 
 const clampNum = (v, min, max) => Math.max(min, Math.min(max, v));
-
-/**
- * 首次渲染后测到的真实高度。0 = 还没测过。
- * 【为什么不能只用常量】入场动画会改变 rect，且浏览器缩放/字体设置会让高度浮动；
- * 偏差会让 computePopoverPosition 的 spaceBelow/spaceAbove 判断失真：
- * 锚点靠近视口底部时，高度估小会让翻转判定误判为「下方放得下」，
- * 于是浮层挂在锚点下方、信息条和「查看大图」按钮整块落在视口外点不到。
- * 【现在高度随图变化】所以缓存只对「当前这一张」有效，换卡时必须在 openPreview 里清零，
- * 否则上一张的实测高度会套到下一张，定位仍然错。
- */
-let popoverMeasuredHeight = 0;
 
 /**
  * 量悬停预览的显示尺寸：宽度固定，高度 = 照片宽度 / 这张图的宽高比 + 信息条。
@@ -938,17 +936,26 @@ function measurePopoverSize() {
   // 避免 0 或 NaN 让整个浮层高度变成 0、定位算到视口外。
   const ratio = card && card.fw > 0 && card.fh > 0 ? card.fw / card.fh : 3 / 4;
 
-  // 高度优先用实测值（openPreview 的 nextTick 里量 offsetHeight）；没测过时按
-  // border-box 估算：照片占 (width - 2px 边框) + 信息条，偏差 ≤3px，随后被实测覆盖。
-  // 照片区的最大高度必须与 CSS 里 .card-popover-photo 的 max-height 保持一致，
-  // 否则 JS 估出来 480px、CSS 只渲染 300px，翻转判定会因为「以为放不下」而误翻到上方。
-  // 60dvh 与 min(60dvh, 480px) 对应；老浏览器没有 dvh 时退回 vh。
   const vh = typeof window === 'undefined' ? 900 : window.innerHeight;
+  // 【自然高度 = 照片按真实比例 + 信息条】完全解析计算，不读任何布局。
+  // 绝不使用 offsetHeight 回填：高度一旦被 max-height 裁过，量到的就是裁剪后的值，
+  // 再把它当自然高度就形成【棘轮效应】—— 视口放大后也永远长不回来。
   const maxPhoto = Math.min(480, Math.round(vh * 0.6));
-  const photo = Math.min((width - 2) / ratio, maxPhoto);
-  const estimated = Math.round(photo + POPOVER_FOOT_HEIGHT + 2);
-  const height = popoverMeasuredHeight || estimated;
-  return { width, height };
+  const photoNatural = (width - 2) / ratio;
+  const natural = Math.round(Math.min(photoNatural, maxPhoto) + POPOVER_FOOT_HEIGHT + 2);
+
+  // 【方案 A：高度服从「所在一侧预算」，而不是把位置钳进视口】
+  // 浮层必须永不覆盖锚点：否则指针离开头像后立刻落进浮层，mouseleave 被浮层的
+  // mouseenter 抢先取消，浮层从此再也不会关闭（这就是实测到的「滚到底也关不掉」）。
+  // 但「不覆盖锚点」与「完整可见」在浮层高于两侧空间时【无解】——
+  // 唯一出路是让高度变小：H := min(自然高度, 预算)。
+  // 预算推导（A=40 锚点高、G=22 间距、M=12 边距、S=90 顶部安全区）：
+  //   spaceBelow(y) = vh - y - 74        spaceAbove(y) = y - 112
+  // 两侧同时不够的最坏锚点 y* = (vh - 38) / 2，此时可用空间 = (vh - 186) / 2。
+  // 取这个与侧别无关的全局上限，好处是高度只随视口变化、side 不会因高度抖动。
+  const hMax = Math.max(POPOVER_MIN_HEIGHT, Math.floor((vh - 186) / 2));
+  const height = Math.min(natural, hMax);
+  return { width, height, natural };
 }
 
 
@@ -982,55 +989,26 @@ function computePopoverPosition(rect, size) {
   // spaceAbove 同样扣安全区：否则「上方更宽裕」会高估，翻上去之后又被钳回来。
   const spaceAbove = rect.top - POPOVER_GAP - safeTop;
 
-  // 翻转规则：下方放得下就放下方（参考站默认 side=bottom）；
-  // 放不下且上方更宽裕就翻到上方；两边都不够时留在空间更大的那一侧。
-  // 两部分都用「相对锚点的绝对量」判断（不含 rect 自身位置），所以滚动不会让 side 抖动。
-  let side = 'bottom';
-  if (size.height > spaceBelow) {
-    side = spaceAbove > spaceBelow ? 'top' : 'bottom';
-  }
+  // 【翻转规则：选空间更大的一侧，保证一定放得下】
+  // measurePopoverSize 已把高度压到 hMax = (vh - 186) / 2 以内，而
+  //   spaceBelow + spaceAbove = (vh - y - 74) + (y - 112) = vh - 186 = 2 * hMax
+  // 恒成立（两项的 y 相互抵消），所以 max(spaceBelow, spaceAbove) >= hMax >= height。
+  // 也就是说【至少一侧一定放得下】，下面这个二选一必然命中，不需要任何兜底钳制。
+  // 两边都用「相对锚点的绝对量」判断，不含 rect 自身位置，滚动不会让 side 抖动。
+  let side;
+  if (spaceBelow >= size.height) side = 'bottom';
+  else if (spaceAbove >= size.height) side = 'top';
+  // 退化分支：hMax 被 POPOVER_MIN_HEIGHT 抬到预算之上（极矮视口，如 844x390）。
+  // 此时两侧都放不下，选空间更大的一侧，让溢出尽量少、且落在远离导航的一边。
+  else side = spaceAbove > spaceBelow ? 'top' : 'bottom';
 
-  // 纵向：直接贴边，不做任何钳制。
-  // bottom → top = rect.bottom + 22；top → top = rect.top - 22 - height。
-  // 这样 top 只随 rect 平移，滚动多少浮层就移动多少（实测要求：差值 = 锚点移动量）。
-  // 允许底部/顶部超出视口被裁：看得见的位置由锚点决定，而不是由视口边界决定。
-  let top = side === 'bottom' ? below : above;
-
-  // 【两侧都不够：必须钳进视口】上下空间都小于弹层高度时，上面那条「留在空间
-  // 更大的一侧」的规则必然让某一侧溢出。桌面上溢出的那一截要靠滚动才露出来，
-  // 但「查看大图」按钮正好在底部信息条里 —— 首屏就点不到，这是实测到的真问题：
-  // 1440x900、画报页默认视图、悬停第一个头像，spaceBelow=432 / spaceAbove=428 /
-  // 弹层高 530，按旧规则选下方，浮层 top=484 bottom=1014，底部被裁 114px，
-  // 按钮 bottom=1008 完全不可点。
-  // 参考站的浮层只有 384px 高，1440x900 下几乎不触发该分支，所以没有可直接
-  // 对照的行为 —— 这里按「整体上移到视口内」处理，保证弹层永远完整可见可点。
-  // clamped=true 时 top 被钳制，不再与锚点保持固定间距，滚动跟随也要跟着钳。
-  const fitsBelow = spaceBelow >= size.height;
-  const fitsAbove = spaceAbove >= size.height;
-  let clamped = false;
-  let clampMinTop = 0;
-  let clampMaxTop = 0;
-  if (!fitsBelow && !fitsAbove) {
-    clampMinTop = safeTop;
-    clampMaxTop = Math.max(safeTop, vh - POPOVER_MARGIN - size.height);
-    top = clampNum(top, clampMinTop, clampMaxTop);
-    clamped = true;
-  }
-
-  // 【窄屏例外：必须钳进视口】
-  // 上面「不钳制」的前提是「锚点会随滚动移动，用户滚一下就能看到被裁的部分」。
-  // 桌面端成立；窄屏不成立 —— 手机上是点一下头像弹出、弹层近似模态，
-  // 用户没有「滚到能看见」这个动作，超出视口的那一截（信息条 + 查看大图按钮）
-  // 就是彻底点不到的。实测 390x844、锚点 bottom=357、弹层高 534：
-  // below 算出 top=379、bottom=913，超出视口 69px，按钮完全不可达。
-  // 所以窄屏把 top 钳进 [safeTop, vh - MARGIN - height]。
-  // 若弹层比可用高度还高（极小屏 + 极窄图），上界会小于下界，
-  // 此时 clampNum 的 min 先于 max 生效会得到下界 —— 宁可顶部贴安全区，
-  // 也不要出现负的可用高度把浮层推到屏幕外。
-  if (vw <= 640) {
-    const maxTop = vh - POPOVER_MARGIN - size.height;
-    top = clampNum(top, safeTop, Math.max(safeTop, maxTop));
-  }
+  // 纵向：直接贴边，不做任何钳制 —— 而且这里【不需要】钳制：
+  //   side=bottom: top + height = rect.bottom + 22 + height <= vh - 12  （由 height <= spaceBelow 推出）
+  //   side=top   : top         = rect.top - 22 - height >= 90 = safeTop （由 height <= spaceAbove 推出）
+  // 两个不变量都是【构造性成立】的，不是事后断言。
+  // 这也顺带保证了浮层永不覆盖锚点（间距恒为 22px），指针离开头像后不会掉进浮层，
+  // 关闭链路才能正常工作 —— 这是本函数存在的根本理由，不要为了「塞进视口」再加回钳制。
+  const top = side === 'bottom' ? below : above;
 
   // 水平：与锚点左边缘对齐，右侧出界时先尝试整体左移（仍保持 start 对齐语义），
   // 移不动再钳进视口。
@@ -1047,11 +1025,9 @@ function computePopoverPosition(rect, size) {
     align,
     top: Math.round(top),
     left: Math.round(left),
-    // 供 applyScrollShift 用：clamped 为真时滚动跟随必须在 [minTop, maxTop] 内，
-    // 否则一滚就把钳好的位置推回视口外，等于钳制失效。
-    clamped,
-    minTop: clampMinTop,
-    maxTop: clampMaxTop,
+    // 照片区实际可用高度（border-box 内除信息条与边框）。模板把它写进 max-height，
+    // 让 CSS 与 JS 用同一个数字，避免「JS 以为放得下、CSS 却裁掉」的分裂。
+    photoHeight: Math.max(0, Math.round(size.height) - POPOVER_FOOT_HEIGHT - 2),
   };
 }
 
@@ -1101,19 +1077,16 @@ function applyScrollShift() {
   const page = pageRef.value;
   const el = popoverRef.value;
   if (!page || !el) return;
-  let nextTop = Math.round(anchorBaseTop - (page.scrollTop - anchorBaseScrollTop));
+  const nextTop = Math.round(anchorBaseTop - (page.scrollTop - anchorBaseScrollTop));
   const nextLeft = Math.round(anchorBaseLeft - (page.scrollLeft - anchorBaseScrollLeft));
-  // 两侧都不够时弹层被钳进视口（见 computePopoverPosition）：这里必须同样钳，
-  // 否则弹层一滚就离开视口，钳制形同虚设。
-  if (popoverState.clamped) {
-    nextTop = Math.max(popoverState.minTop, Math.min(popoverState.maxTop, nextTop));
-  }
-  // 【窄屏不跟随滚动 —— 与 computePopoverPosition 的窄屏钳制配套】
-  // 窄屏弹层已经被钳进视口（近似模态），若这里再按滚动增量平移，
-  // 一滚就会把刚钳好的位置推回视口外，等于钳制失效。
-  // 桌面端保持逐像素跟随（参考站实测要求：浮层位移 == 锚点位移）。
-  const vwNow = typeof window === 'undefined' ? 1440 : window.innerWidth;
-  if (vwNow <= 640) return;
+  // 【窄屏同样逐像素跟随 —— 2026-10 修正】
+  // 曾经这里有一行 `if (window.innerWidth <= 640) return;`，理由是「窄屏弹层近似模态，
+  // 跟着滚会飘走、难以点按」。但源站实测（390x844 真机 UA，documentElement 滚动）
+  // 窄屏同样是精确跟随：滚 60px 浮层 top 273→213、滚 120px→93、滚 200px→-107，
+  // 位移恒等于滚动量，且允许浮层滚出视口顶部不做钳制。
+  // 而不跟随会破坏「浮层永不覆盖锚点」这个不变量：浮层钉死在打开时的位置，
+  // 锚点却随页面移动，实测 390x844 下向上滚 50px 锚点就撞进浮层内部
+  // （浮层[503,832]、锚点[491,531]，重叠）。所以窄屏必须和桌面一样跟随。
   // 直接写 DOM，绕开 Vue 的响应式调度（见 scrollAppliedTop 的说明）。
   // 只在值真的变了才写；写的是 translate（不触发布局），见 writePopoverOffset。
   if (nextTop !== scrollAppliedTop || nextLeft !== scrollAppliedLeft) {
@@ -1290,8 +1263,6 @@ function clearCloseTimer() {
  */
 function openPreview(anchor, card) {
   closeProbeCount = 0;   // 新一轮悬停，重排计数归零
-  // 每张图高度不同：上一张的实测高度绝不能套到这一张，否则定位会按错误的尺寸算
-  popoverMeasuredHeight = 0;
   clearCloseTimer();
   // 顺序：先关掉上一张（动画会走 closing，但新弹层直接替换 ref），再设置新锚点。
   activeCard.value = card;
@@ -1308,21 +1279,20 @@ function openPreview(anchor, card) {
   popoverAnim.value = 'opening';
   attachGlobalListeners();
 
-  // 渲染后按弹层真实矩形再校正一次：上面的尺寸是按清单比例算的估算值，
-  // 大图的真实宽高比、以及 translateZ(0) 造成的尺寸误差都以实测为准。
-  // 放在 nextTick 里只做一次，不影响首帧（首帧已经有估算位置，不会闪到左上角）。
+  // 渲染后按弹层真实宽度再校正一次（只校正横向）：
+  // 【高度绝不回填】高度由 measurePopoverSize 的预算解析算出，是权威值。
+  // 若在这里用 el.offsetHeight 覆盖，量到的必然是已被 max-height 裁过的值，
+  // 就形成棘轮效应（视口放大也长不回来）。横向则不同：宽度受 CSS 媒体查询影响，
+  // 实测值更可靠，且宽度不参与预算推导，覆盖它是安全的。
   nextTick(() => {
     const el = popoverRef.value;
-    // 缓存真实高度：computePopoverPosition 的翻转判定要用它，否则贴底卡片会被裁
-    if (!el || !activeCard.value || !popoverAnchor || popoverAnim.value === 'closing') return;
     // 判空之后再读尺寸（el 可能已因快速关闭/路由卸载而变 null）
-    // 用 offsetHeight 而不是 getBoundingClientRect().height：入场动画从 scale(0.95) 起步，
-    // 此刻 rect 只有 322 而布局高度已是 339，用 rect 会把高度永久记小 17px。
-    if (el.offsetHeight > 0) popoverMeasuredHeight = el.offsetHeight;
+    if (!el || !activeCard.value || !popoverAnchor || popoverAnim.value === 'closing') return;
     const rect = popoverAnchor.getBoundingClientRect();
+    const size = measurePopoverSize();
     Object.assign(popoverState, computePopoverPosition(rect, {
-      width: el.offsetWidth,
-      height: el.offsetHeight,
+      width: el.offsetWidth || size.width,
+      height: size.height,
     }));
     // 校正后的位置才是后续滚动跟随的基准，必须重新记一次。
     captureScrollBase();
@@ -2577,15 +2547,21 @@ columns.value = assignColumns(columnCount.value);
   width: 100%;
   aspect-ratio: 3 / 4;
   /*
-   * 【必须限高，否则矮视口整块跑到屏幕外】
+   * 【必须限高，否则浮层会盖住锚点、关闭链直接断掉】
    * 高度 = 宽度 / 宽高比，320 宽的竖构图会算出 400~430px，加上信息条就 ~480px。
-   * 手机上锚点往往在屏幕中部，浮层一打开就有大半截在视口外（实测 390x844 时
-   * 浮层 top=379 / bottom=978，超出底边 134px），既看不全也点不到下面的按钮。
-   * 用 dvh 而不是 vh：移动端地址栏收起/展开时 vh 不跟着变，dvh 是动态视口高度。
+   * 而「不覆盖锚点」要求 高度 <= 该侧可用空间，两侧同时不够时无解 ——
+   * 唯一出路是把高度压下来（见 measurePopoverSize 的 hMax 推导）。
+   *
+   * 【max-height 现在由 JS 内联给出，不在这里写死】
+   * 因为预算 hMax = (vh - 186) / 2 依赖视口高度，CSS 拿不到锚点位置，
+   * 只能给出一个与视口无关的保守值，那必然在矮窗口下算错。
+   * 所以模板绑定 :style="{ maxHeight: popoverState.photoHeight + 'px' }"，
+   * 让 JS 与 CSS 用同一个数字，避免「JS 以为放得下、CSS 却裁掉」的分裂。
+   * 这里的 50dvh 只是内联值缺失时的兜底（与 hMax 同源，同样保守）。
    * max-height 会和 aspect-ratio 打架吗？不会 —— aspect-ratio 是建议尺寸，
    * 一旦 max-height 更小，盒子按 max-height 收缩，图片靠 object-fit: cover 裁切。
    */
-  max-height: min(60dvh, 480px);
+  max-height: min(480px, calc(50dvh - 147px));
   overflow: hidden;
   background: rgba(255, 255, 255, 0.06);
   flex: none;
