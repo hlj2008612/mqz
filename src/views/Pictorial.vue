@@ -217,11 +217,18 @@
         这样图片进 DOM 之前浮层就已经占好正确高度，computePopoverPosition 不会先按
         一个错误高度判「放得下」再被撑开 —— 这是上一版资料卡用固定高度 339 的原因，
         照片形态必须改成按比例算。
+
+        【max-width 与 max-height 必须成对给出】只给 max-height 时，aspect-ratio 算出的
+        高度被砍、宽度不跟着缩，盒子实际宽高比 = 满宽 / 限高（竖图约 1.05，接近正方），
+        照片被 object-fit: cover 裁成中间一条 —— 用户反馈的「比例很怪」。
+        现在高度受限时 JS 已把宽度等比算小，模板同时把两个上限写进去，
+        CSS 的 margin-inline: auto 再让变窄的照片在浮层里居中。
       -->
       <div
         class="card-popover-photo"
         :style="{
           aspectRatio: activeCard.fw + ' / ' + activeCard.fh,
+          maxWidth: popoverState.photoWidth ? popoverState.photoWidth + 'px' : null,
           maxHeight: popoverState.photoHeight ? popoverState.photoHeight + 'px' : null,
         }"
       >
@@ -627,6 +634,7 @@ onUnmounted(() => {
   popoverState.align = 'start';
   popoverState.top = 0;
   popoverState.left = 0;
+  popoverState.photoWidth = 0;
   popoverState.photoHeight = 0;
 
   if (rafId) cancelAnimationFrame(rafId);
@@ -867,9 +875,11 @@ const popoverState = reactive({
   align: 'start',
   top: 0,
   left: 0,
-  // 照片区高度（由 measurePopoverSize 的预算算出），模板绑定到 max-height。
-  // 【为什么必须由 JS 决定而不是纯 CSS】预算依赖「两侧空间的最坏情况」，
-  // 而 CSS 拿不到锚点位置；只有 JS 知道当前视口能给出多少。
+  // 照片区宽高（由 computePhotoBox 的预算算出），模板分别绑定到 max-width / max-height。
+  // 【为什么必须由 JS 决定而不是纯 CSS】预算依赖视口高度，而 CSS 拿不到；
+  // 更关键的是高度受限时【宽度也要一起缩】，只有成对给出 max-width + max-height 才能
+  // 让盒子保持照片真实宽高比（只给 max-height 会把照片压扁，见 computePhotoBox 注释）。
+  photoWidth: 0,
   photoHeight: 0,
 });
 
@@ -970,10 +980,57 @@ const POPOVER_FOOT_HEIGHT = 52;
  */
 const POPOVER_MIN_HEIGHT = POPOVER_FOOT_HEIGHT + 2 + 120;
 
+/**
+ * 【宽高比失真的根源】照片区只用 max-height 限高时，盒子宽度【不会】跟着收缩：
+ * 1 号照片 fw/fh = 374/560（0.668）在 1440x900 下算出 318x476，被 max-height 砍到
+ * 318x303 —— 实际比例 1.05（接近正方），img 再被 object-fit: cover 裁成中间一条。
+ * 所以高度受限时必须让宽度按同一比例一起缩：
+ *   高度 H = min(可用宽 / ratio, maxPhoto, photoHeight)；宽 = H * ratio。
+ * 本函数是「照片区盒子」的唯一权威计算，measurePopoverSize() 也用它的宽高，
+ * JS 预算与 CSS 渲染因此不可能分裂。
+ *
+ * 浮层总高不变（照片区高 + 信息条 + 边框），所以「不覆盖锚点 + 完整可见」的
+ * 构造性推导原样成立，副作用只是浮层变窄。
+ *
+ * @returns {{ ratio:number, photoWidth:number, photoHeight:number }}
+ *   photoWidth / photoHeight 是照片区（= 浮层内宽）的尺寸，向上取整，
+ *   与 CSS 的 aspect-ratio + max-height 组合结果逐像素一致（高 = 宽 / ratio）。
+ */
+function computePhotoBox() {
+  const vw = typeof window === 'undefined' ? 1440 : window.innerWidth;
+  const vh = typeof window === 'undefined' ? 900 : window.innerHeight;
+  const vwOk = vw > 0 ? vw : POPOVER_FALLBACK_VW;
+  const vhOk = vh > 0 ? vh : 900;
+
+  const card = activeCard.value;
+  // 宽高比缺失或非法时退回 3:4（项目图片多为竖构图），避免 0 / NaN 让整层尺寸塌成 0。
+  const ratio = card && card.fw > 0 && card.fh > 0 ? card.fw / card.fh : 3 / 4;
+
+  // 照片区可用宽度 = 浮层总宽（与 CSS 媒体查询同式）减去左右 1px 边框。
+  const width = Math.max(0, Math.min(POPOVER_PHOTO_WIDTH, vwOk - POPOVER_MARGIN * 2));
+  const photoMaxWidth = Math.max(1, width - 2);
+
+  // 高度上限：自然高上限（短竖图不至于遮太大）+ 视口比例 + 预算 hMax 扣掉信息条与边框。
+  const hMax = Math.max(POPOVER_MIN_HEIGHT, Math.floor((vhOk - 186) / 2));
+  const photoHeightCap = Math.max(1, Math.min(Math.round(vhOk * 0.6), 480, hMax - POPOVER_FOOT_HEIGHT - 2));
+
+  const naturalHeight = photoMaxWidth / ratio;
+  const photoHeight = Math.max(1, Math.min(naturalHeight, photoHeightCap));
+  // 高度没被限时宽就是可用宽；被限时宽等比缩（Math.ceil 让高度 >= 目标值，不会多裁一条）。
+  const photoWidth = Math.min(photoMaxWidth, Math.ceil(photoHeight * ratio));
+
+  return {
+    ratio,
+    photoWidth: Math.round(photoWidth),
+    photoHeight: Math.ceil(photoWidth / ratio),
+  };
+}
+
 const clampNum = (v, min, max) => Math.max(min, Math.min(max, v));
 
 /**
- * 量悬停预览的显示尺寸：宽度固定，高度 = 照片宽度 / 这张图的宽高比 + 信息条。
+ * 量悬停预览的显示尺寸：高度 = 照片高度上限 + 信息条 + 边框；宽度取 computePhotoBox 的
+ * 照片区宽 + 边框（高度受限时照片区宽度已等比收缩，浮层随之变窄，不再是固定 320）。
  *
  * 【为什么必须在渲染前算出来】computePopoverPosition 要用高度判断「下方放不放得下」，
  * 否则得先渲染一次、量完再摆，第一帧会闪一下。
@@ -983,23 +1040,24 @@ const clampNum = (v, min, max) => Math.max(min, Math.min(max, v));
  */
 function measurePopoverSize() {
   const vw = typeof window === 'undefined' ? 1440 : window.innerWidth;
+  const vh = typeof window === 'undefined' ? 900 : window.innerHeight;
   const vwOk = vw > 0 ? vw : POPOVER_FALLBACK_VW;
+
+  // 【尺寸唯一来源是 computePhotoBox】照片区宽高（高度受限时宽度等比收缩）由它算，
+  // 这里只负责把它加成「浮层总宽 / 总高」。完全解析计算，不读任何布局。
+  // 绝不使用 offsetHeight 回填：量到的是裁剪后的值，会把预算永久记小（棘轮效应）。
+  const box = computePhotoBox();
   // 与 CSS 里 @media (max-width:640px) 的 width: calc(100vw - 24px) 用同一公式。
   // Math.max(0, ...)：视口极窄时别算出负数宽度，否则定位会翻到屏幕外。
-  const width = Math.max(0, Math.min(POPOVER_PHOTO_WIDTH, vwOk - POPOVER_MARGIN * 2));
-
-  const card = activeCard.value;
-  // 宽高比缺失或非法时退回 3:4（项目图片都是竖构图，比 1:1 更接近真实高度），
-  // 避免 0 或 NaN 让整个浮层高度变成 0、定位算到视口外。
-  const ratio = card && card.fw > 0 && card.fh > 0 ? card.fw / card.fh : 3 / 4;
-
-  const vh = typeof window === 'undefined' ? 900 : window.innerHeight;
-  // 【自然高度 = 照片按真实比例 + 信息条】完全解析计算，不读任何布局。
-  // 绝不使用 offsetHeight 回填：高度一旦被 max-height 裁过，量到的就是裁剪后的值，
-  // 再把它当自然高度就形成【棘轮效应】—— 视口放大后也永远长不回来。
-  const maxPhoto = Math.min(480, Math.round(vh * 0.6));
-  const photoNatural = (width - 2) / ratio;
-  const natural = Math.round(Math.min(photoNatural, maxPhoto) + POPOVER_FOOT_HEIGHT + 2);
+  // 【浮层宽度必须跟着照片区走，不能取两者的较大值】
+  // 曾经写成 `Math.max(box.photoWidth + 2, 满宽)`，本意是「别比照片还窄」，
+  // 但照片区高度受限时 box.photoWidth 会被等比缩到 171，而满宽是 318，
+  // Math.max 又把它撑回 318 —— 于是模板绑的 max-width:318px 与可用内宽【相等】，
+  // 等于没限制，竖图仍然被压成 318x303（比例 1.05）。
+  // 正解：高度受限时浮层整体变窄，宽度 = 照片区宽 + 左右边框。
+  const maxPopWidth = Math.max(0, Math.min(POPOVER_PHOTO_WIDTH, vwOk - POPOVER_MARGIN * 2));
+  const width = Math.min(maxPopWidth, box.photoWidth + 2);
+  const natural = Math.round(box.photoHeight + POPOVER_FOOT_HEIGHT + 2);
 
   // 【方案 A：高度服从「所在一侧预算」，而不是把位置钳进视口】
   // 浮层必须永不覆盖锚点：否则指针离开头像后立刻落进浮层，mouseleave 被浮层的
@@ -1012,7 +1070,7 @@ function measurePopoverSize() {
   // 取这个与侧别无关的全局上限，好处是高度只随视口变化、side 不会因高度抖动。
   const hMax = Math.max(POPOVER_MIN_HEIGHT, Math.floor((vh - 186) / 2));
   const height = Math.min(natural, hMax);
-  return { width, height, natural };
+  return { width, height, natural, photoBox: box };
 }
 
 
@@ -1082,9 +1140,13 @@ function computePopoverPosition(rect, size) {
     align,
     top: Math.round(top),
     left: Math.round(left),
-    // 照片区实际可用高度（border-box 内除信息条与边框）。模板把它写进 max-height，
-    // 让 CSS 与 JS 用同一个数字，避免「JS 以为放得下、CSS 却裁掉」的分裂。
-    photoHeight: Math.max(0, Math.round(size.height) - POPOVER_FOOT_HEIGHT - 2),
+    // 照片区尺寸（border-box 内除信息条与边框）。模板把这两个数字分别写进
+    // max-width 与 max-height —— 必须成对给出：只给 max-height 的话 aspect-ratio
+    // 会被砍、宽度不跟着缩，照片就被压扁成接近正方形（本轮的 BUG）。
+    // width 取 size.photoBox（= computePhotoBox，同一事实源），不用 size.width - 2 反推，
+    // 因为 nextTick 校正时 size.width 会被替换成实测的 offsetWidth。
+    photoWidth: Math.max(0, Math.round(size.photoBox ? size.photoBox.photoWidth : size.width - 2)),
+    photoHeight: Math.max(0, Math.round(size.photoBox ? size.photoBox.photoHeight : size.height - POPOVER_FOOT_HEIGHT - 2)),
   };
 }
 
@@ -1355,9 +1417,15 @@ function openPreview(anchor, card) {
     if (!popoverAnchor.isConnected) return;
     const rect = popoverAnchor.getBoundingClientRect();
     const size = measurePopoverSize();
+    // 【photoBox 必须原样传下去】上一版这里手搓 { width, height } 丢掉了 photoBox，
+    // computePopoverPosition 于是回退到 size.width - 2（= 318）当照片区宽度，
+    // 把首次打开时算对的 171 又覆盖回满宽 —— 竖图被压成 1.05 的元凶就是这里。
+    // 宽度覆盖只影响「浮层总宽」的定位，照片区尺寸始终以 photoBox 为准。
     Object.assign(popoverState, computePopoverPosition(rect, {
       width: el.offsetWidth || size.width,
       height: size.height,
+      natural: size.natural,
+      photoBox: size.photoBox,
     }));
     // 校正后的位置才是后续滚动跟随的基准，必须重新记一次。
     captureScrollBase();
@@ -2639,6 +2707,12 @@ columns.value = assignColumns(columnCount.value);
   width: 100%;
   aspect-ratio: 3 / 4;
   /*
+   * 【变窄时居中】高度受限时脚本会把 max-width 缩到 高度 x 宽高比，盒子不再占满浮层内宽。
+   * 不居中则竖图贴左、右侧空出一条玻璃底，看起来像「照片没摆正」。
+   * 宽度没被限（自然高度下）时 auto 边距为 0，视觉与改动前完全一致。
+   */
+  margin-inline: auto;
+  /*
    * 【必须限高，否则浮层会盖住锚点、关闭链直接断掉】
    * 高度 = 宽度 / 宽高比，320 宽的竖构图会算出 400~430px，加上信息条就 ~480px。
    * 而「不覆盖锚点」要求 高度 <= 该侧可用空间，两侧同时不够时无解 ——
@@ -2650,8 +2724,11 @@ columns.value = assignColumns(columnCount.value);
    * 所以模板绑定 :style="{ maxHeight: popoverState.photoHeight + 'px' }"，
    * 让 JS 与 CSS 用同一个数字，避免「JS 以为放得下、CSS 却裁掉」的分裂。
    * 这里的 50dvh 只是内联值缺失时的兜底（与 hMax 同源，同样保守）。
-   * max-height 会和 aspect-ratio 打架吗？不会 —— aspect-ratio 是建议尺寸，
-   * 一旦 max-height 更小，盒子按 max-height 收缩，图片靠 object-fit: cover 裁切。
+   * max-height 会和 aspect-ratio 打架吗？【会】—— aspect-ratio 只是建议尺寸，
+   * 一旦 max-height 更小，盒子高度按 max-height 收缩，而宽度【仍锁在可用内宽】，
+   * 实际宽高比就变成「满宽 / 限高」（竖图 ≈ 1.05，接近正方），object-fit: cover 再把图裁掉。
+   * 所以 max-width 必须与 max-height 成对绑定（见模板），高度受限时宽度等比收缩；
+   * cover 保留，仅用于宽高比数据异常（fw/fh 兜底值）时的极端边界，正常路径裁切量为 0。
    */
   max-height: min(480px, calc(50dvh - 147px));
   overflow: hidden;
