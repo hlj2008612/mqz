@@ -1,6 +1,6 @@
 # 美琴的照片墙 (photo-wall-vue)
 
-Vue 3 + Vite 重构版照片墙。用无限画布把 20 张照片铺满整面墙，支持惯性拖拽与沉浸式浏览。
+Vue 3 + Vite 重构版照片墙。用无限画布把 23 张照片铺满整面墙，支持惯性拖拽与沉浸式浏览。
 
 线上地址：<https://zmq-hlj.ccwu.cc/>
 
@@ -23,8 +23,8 @@ public/
   icons.svg
   _headers              Netlify / Cloudflare Pages 缓存与安全策略（GitHub Pages 忽略）
   images/thumbnails/    缩略图 webp，照片墙实际加载的就是这些（发布载荷）
-  images/full/          1600px 中图，当前未被代码引用
-assets-src/images/zmq/  97 MB 原图，【不在】public/ 下，因此不会进 dist/
+  images/full/          1600px 大图，画报页悬停浮层与「查看大图」使用
+assets-src/images/zmq/  100.9 MB 原图，【不在】public/ 下，因此不会进 dist/
 src/
   core/                 原生 JS 照片墙引擎（渲染、惯性、输入、状态）
   views/                PhotoWall / Home / Cinema / Pictorial / Login
@@ -110,13 +110,14 @@ GitHub Pages 上实际生效的（且无法用仓库内配置文件覆盖）是�
 | 资源 | 体积 |
 | --- | --- |
 | 全部 JS + CSS（brotli） | 约 70 KB |
-| `public/images/thumbnails/`（20 张 webp，发布载荷） | 约 537 KB |
-| `public/images/full/`（当前未被引用） | 见仓库 |
-| `assets-src/images/zmq/`（原图，**不发布**） | 约 97 MB |
+| `public/images/thumbnails/`（23 张 webp，发布载荷） | 约 652 KB（667,932 B） |
+| `public/images/full/`（1600px 大图，**悬停浮层与大图查看使用**） | 约 3.07 MB（3,221,330 B） |
+| `assets-src/images/zmq/`（原图，**不发布**） | 约 100.9 MB（105,766,966 B） |
 
 也就是说，**图片比代码大两个数量级以上**。任何有意义的优化都必须先把图片做下来：
 
-- 照片墙只为每张卡渲染缩略图（`/images/thumbnails/*.webp`），原图只在查看大图时才需要；
+- 照片墙只为每张卡渲染缩略图（`/images/thumbnails/*.webp`），
+  画报页悬停头像弹出的预览层与「查看大图」用的是 `public/images/full/` 的 1600px 大图；
 - 照片墙只加载 `public/images/thumbnails/` 里的 webp；原图在 `assets-src/` 且不参与发布；
 - 用 `npm run optimize:images` 重新生成响应式尺寸，避免在卡片里塞 1 MB 级的图。
 

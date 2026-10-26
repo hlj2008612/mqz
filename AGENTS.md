@@ -44,4 +44,4 @@
 - 线上：<https://zmq-hlj.ccwu.cc/>（源 = `gh-pages` 分支）
 - 开发分支：`main`
 - 登录：`zmq` / `2008823`（客户端硬编码，非真鉴权）
-- 版本：`package.json` = 2.2.0
+- 版本：`package.json` = 2.3.0（Release 尚未发布，见 `记忆/01-项目概览.md`）
