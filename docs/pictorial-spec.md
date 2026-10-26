@@ -24,8 +24,8 @@
 .scanlines               固定扫描线层（叠在背景上）
 main.pictorial-page      相对定位，padding-top 给固定导航留位
   .pictorial-tabs        「默认 / 热度」两个胶囊
-  .masonry-grid          5 列 flex 容器
-    .masonry-column ×5   每列独立堆叠
+  .masonry-grid          flex 容器（列数 2~8 随视口变化，见 §4）
+    .masonry-column ×N    每列独立堆叠
       .card-shell        卡片外层（承载 hover 位移与 z-index）
         .card-tilt       倾斜/视差层（本项目简化为静态）
           .card-glass    玻璃卡片本体
@@ -51,6 +51,7 @@ main.pictorial-page      相对定位，padding-top 给固定导航留位
 ```
 - 外层容器最大宽度 `2200px`，水平居中，底部留 `padding-bottom: 5rem`。
 - 1440px 视口实测：5 列，列宽 `278.391px`，网格总宽 `1392px`，卡片宽 `262.391px`。
+- **列数不是固定 5 列**，按 `COLUMN_BREAKPOINTS` 七档查表，见 §4。
 
 ### 2.2 卡片外壳
 ```css
@@ -125,8 +126,9 @@ main.pictorial-page      相对定位，padding-top 给固定导航留位
 .card-media {
   position: relative;
   overflow: hidden;
-  contain: layout style paint;
-  transform: translateZ(0);
+  /* 实测实现是 contain: content（参考站 .image-glow 也是 content），
+     且没有 transform: translateZ(0)。改回 layout style paint 会改变包含块与层叠上下文。 */
+  contain: content;
   /*
    * 【高度自适应】真实宽高比由模板内联到 style 上（来自清单里缩略图的真实像素）：
    *   <div class="card-media" :style="{ aspectRatio: card.w + ' / ' + card.h }">
@@ -153,6 +155,12 @@ background: linear-gradient(to bottom,
 ```
 
 ### 2.7 作者行
+
+> ⚠️ **已改**：头像从 `.card-author img` 改成 `.card-avatar`（`<button>` 包一层 `<img>`），
+> 以获得原生键盘可达与 Enter/Space 支持，见 `src/views/Pictorial.vue`。
+> 视觉尺寸不变（2.5rem、`display: block`），因此卡片总高不受影响、不干扰贪心分配。
+> 下面保留参考站原始写法备查。
+
 ```css
 .card-author {
   position: relative; z-index: 10;
@@ -180,6 +188,10 @@ background: linear-gradient(to bottom,
 ```
 
 ### 2.8 正文区
+
+> ⚠️ **已改**：`.card-title` 已随模板里的 `<h2 class="card-title">写真</h2>` 一并删除，
+> 当前实现中没有这个选择器。下面保留参考站原始写法备查。
+
 ```css
 .card-body { padding: 0.25rem 0.5rem 0.25rem; }
 .card-body-inner { padding: 0.5rem 0.75rem 0.5rem 0.5rem; }
@@ -238,7 +250,7 @@ background: linear-gradient(to bottom,
 
 ## 3. 数据与内容适配（本项目与参考站的差异）
 
-参考站是论坛，卡片内容是「帖子」。本项目没有帖子数据，改用 `src/core/imageManifest.js` 的 `IMAGE_POOL`（20 张照片）。
+参考站是论坛，卡片内容是「帖子」。本项目没有帖子数据，改用 `src/core/imageManifest.js` 的 `IMAGE_POOL`（23 张照片）。
 
 | 参考站字段 | 本项目取值 |
 |---|---|
@@ -260,7 +272,13 @@ background: linear-gradient(to bottom,
 也就是说参考站的内容底部参差比本项目更大。本项目不做等高拉伸，列高就是内容真实高度。
 
 本项目实现要求：
-1. 桌面 5 列；平板 3 列；手机 2 列（断点建议 1024 / 640，可调）。
+1. **列数按七档查表**（`COLUMN_BREAKPOINTS`，改前曾写死 5 列，与参考站不符）：
+
+   | minWidth | ≥1900 | ≥1680 | ≥1500 | ≥1280 | ≥1024 | ≥768 | <768 |
+   |---|---|---|---|---|---|---|---|
+   | 列数 | 8 | 7 | 6 | 5 | 4 | 3 | 2 |
+
+   **不要写成线性公式**：档位间隔不均匀（220 / 180 / 220），线性式会让分界点推迟。
 2. 分配策略：**逐张放入当前累计高度最短的列**（贪心平衡），而不是简单轮询。
    卡片高度 = 图片高度 + 作者行 + 正文区，其中
    **图片高度 = 列宽 / (w/h) = 列宽 × h/w**（w/h 取自清单里缩略图的真实像素），
@@ -269,8 +287,9 @@ background: linear-gradient(to bottom,
    列上有 `padding-left: 1rem`，含 padding 的宽度会比卡片宽约 16px，把图片高度高估约 6%。
    可在挂载后用 `offsetHeight` 实测，也可用估算值；实测值缓存在 `measured`（uid -> px）。
    **要求：不得引入任何瀑布流库（禁止新增依赖）。**
-3. 23 张照片分到 5 列，数量不固定（高度参差，贪心结果约每列 4~6 张）。
+3. 23 张照片按视口分到 2~8 列，数量不固定（高度参差，贪心结果约每列 4~6 张）。
 4. 响应式列数变化时（`resize`）要重新分配，用 `requestAnimationFrame` 节流。
+   **列数变化时必须 `measured.clear()`** —— `measured` 是 `uid -> px`，不含列宽维度，跨断点后全部失效。
 
 ## 5. 必须遵守的约束
 
