@@ -163,29 +163,6 @@
                     </div>
                   </div>
                 </div>
-
-                <!--
-                  整张卡面 = 「查看大图」的点击区（用户要求：去掉浮层里的文字与
-                  「查看大图」按钮，改为点卡面本身看大图）。
-
-                  【为什么用绝对定位的 button 盖一层，而不是把整个 article 变成 button】
-                  .card-glass 里已经有一个头像 button，button 不能嵌套 button。
-                  这层是兄弟节点、z-index 高于卡片内容，只负责接收点击；
-                  头像自己的点击（弹资料卡）用 z-index 压在它上面。
-
-                  【为什么必须挡在图片上面】图片带 draggable=false 但仍会参与
-                  命中测试与选择，覆盖层顺带把这些干扰一并挡掉。
-
-                  【无障碍】它带 aria-label，键盘 Tab 可以到达、Enter 触发；
-                  与头像按钮一样是本页的「可操作入口」，屏幕阅读器能分别读到头像与卡面。
-                -->
-                <button
-                  type="button"
-                  class="card-open"
-                  :aria-label="'查看照片 ' + padId(card.uid) + ' 大图'"
-                  :data-uid="card.uid"
-                  @click.stop="openViewerFromCard(card)"
-                ></button>
               </article>
             </div>
           </div>
@@ -195,7 +172,7 @@
   </main>
 
   <!--
-    个人资料卡（复刻参考站首页头像悬停弹出的 profile hover card）。
+    照片预览弹层（仿参考站点开头像弹出的 popover，内容是这张卡对应的照片）。
 
     【为什么 Teleport 到 body】
     本页滚动容器 .pictorial-page 是 overflow:auto，祖先还有 #app 的 overflow:hidden。
@@ -209,10 +186,6 @@
 
     @click.stop 必须写在弹层容器上（见脚本里的注释）：
     弹层的点击不能被 document 上的"点外部关闭"监听器当成"点在外部"。
-
-    【鼠标跟随的分层结构】见脚本 tiltProfileFrame 与样式里的 .pc-* 变量。
-    每一层是一个独立的 translate3d，系数不同 —— 这是「鼠标在卡内移动时
-    有层次」的来源，不是整块一起动。
   -->
   <Teleport to="body">
     <div
@@ -225,79 +198,52 @@
       role="dialog"
       aria-modal="false"
       tabindex="-1"
-      :aria-label="'美琴的资料卡'"
+      :aria-label="'照片 ' + padId(activeCard.uid) + ' 预览'"
       :style="popoverStyle"
       @mouseenter="onCardEnter"
       @mouseleave="onAvatarLeave(false, true)"
-      @pointermove="onProfilePointerMove"
-      @pointerenter="onProfilePointerEnter"
       @wheel="onPopoverWheel"
       @click.stop
       @animationend="onPopoverAnimEnd"
     >
       <!--
-        资料卡内部结构（参考站形态，逐层对应）：
+        悬停预览：直接显示这张卡对应的照片本身（1600px 版）。
 
-          .pc-hero     顶部头图（本卡的照片，作为封面）—— 视差最外圈，位移最大
-            .pc-avatar 圆形头像（同一张照片）—— 压住头图下沿
-          .pc-body     名字 + 签名
-          .pc-stats    三列统计
-          .pc-actions  三颗按钮
-          .pc-sheen    鼠标跟随的光斑（纯装饰）
+        【为什么用 full 而不是 src】src 是缩略图（最长边 560px），放大到卡片宽度后
+        会明显发虚。full 是同一张图的 1600px 版，且只在悬停时按需加载一张，代价可接受。
 
-        【内容全部来自这张卡自己的数据】不伪造用户信息：
-        名字统一「美琴」、签名「这个人很神秘，什么都没留下」（与参考站缺省签名一致），
-        统计里的「帖子」= 照片数 23，获赞/粉丝本项目没有真实数据、如实显示 0，
-        按钮沿用参考站的样式但改成对本页有意义的动作。
+        【尺寸由宽高比决定】外层 .card-popover-photo 的 aspect-ratio 用 fw/fh 内联写死，
+        这样图片进 DOM 之前浮层就已经占好正确高度，computePopoverPosition 不会先按
+        一个错误高度判「放得下」再被撑开。
+
+        【宽度跟卡片走、高度完全自适应】
+        浮层宽度由 .card-popover 的宽度决定（= 卡片实宽，见 resolvePopoverWidth）；
+        照片区 width: 100%，高度只由 aspect-ratio 推出，因此恒等于「宽度 / (fw/fh)」。
+        这里【不再绑 max-width / max-height】：
+          · 绑 max-height 会砍高度而不缩宽度，比例变成「满宽 / 限高」→ 照片被 cover 裁掉
+            （就是用户反馈过两次的「比例很怪」）；
+          · 用户本轮要求「高度可以和照片自适应」，高度本来就不该再被任何预算压。
+        比例有三重保证：宽度定死、高度由 aspect-ratio 算、img 用 object-fit: cover 兜底。
       -->
-      <div class="pc-tilt">
-        <div class="pc-hero">
-          <img
-            class="pc-hero-img"
-            :src="activeCard.src"
-            alt=""
-            aria-hidden="true"
-            decoding="async"
-            draggable="false"
-          />
-          <div class="pc-hero-fade" aria-hidden="true"></div>
-          <span class="pc-badge">NO.{{ padId(activeCard.uid) }}</span>
-        </div>
-
-        <div class="pc-avatar">
-          <img
-            :src="activeCard.src"
-            alt="美琴的头像"
-            decoding="async"
-            draggable="false"
-          />
-        </div>
-
-        <div class="pc-body">
-          <p class="pc-name">美琴</p>
-          <p class="pc-bio">这个人很神秘，什么都没留下</p>
-        </div>
-
-        <div class="pc-stats">
-          <div class="pc-stat"><b>0</b><span>获赞</span></div>
-          <div class="pc-stat"><b>0</b><span>粉丝</span></div>
-          <div class="pc-stat"><b>{{ IMAGE_POOL.length }}</b><span>帖子</span></div>
-        </div>
-
-        <!--
-          只保留一颗通栏按钮。
-          【为什么没有「查看大图」】用户要求：去掉悬停卡面上的「查看大图」功能，
-          改为直接点击卡面看大图（见卡片上的 .card-open 点击层）。
-          这颗按钮的位置对应参考站资料卡的「一起听歌」通栏行，形式保持一致，
-          但动作换成对本页真实有意义的「定位照片」。
-        -->
-        <div class="pc-actions">
-          <button type="button" class="pc-btn" @click.stop="jumpToCard(activeCard)">
-            定位照片
-          </button>
-        </div>
-
-        <span class="pc-sheen" aria-hidden="true"></span>
+      <div
+        class="card-popover-photo"
+        :style="{ aspectRatio: activeCard.fw + ' / ' + activeCard.fh }"
+      >
+        <img
+          :src="activeCard.full"
+          :alt="'照片 ' + padId(activeCard.uid) + ' 预览'"
+          decoding="async"
+          draggable="false"
+        />
+        <span class="card-popover-no">NO.{{ padId(activeCard.uid) }}</span>
+      </div>
+      <div class="card-popover-foot">
+        <span class="card-popover-hint">点击查看大图 · 移开自动关闭</span>
+        <button
+          type="button"
+          class="card-popover-btn is-primary"
+          @click.stop="openViewerFromCard(activeCard)"
+        >查看大图</button>
       </div>
     </div>
   </Teleport>
@@ -752,10 +698,8 @@ onUnmounted(() => {
   popoverState.align = 'start';
   popoverState.top = 0;
   popoverState.left = 0;
-  popoverState.heroH = 0;
+  popoverState.photoHeight = 0;
   popoverState.width = 0;
-  resetProfileTilt();
-  profileBox = null;
 
   if (rafId) cancelAnimationFrame(rafId);
   rafId = 0;
@@ -905,110 +849,6 @@ const onTiltLeave = (e) => {
 };
 
 
-/* --------------------------------------- 资料卡的鼠标跟随（分层视差） */
-
-/**
- * 个人资料卡的鼠标跟随：3D 倾斜 + 分层视差 + 光斑。
- *
- * 【为什么单独一套，不复用卡片的 applyTilt】
- * 卡片是「整块倾斜 + 图片视差」，资料卡要做**分层**（头图/头像/文字/按钮/光斑
- * 各自位移幅度不同），维度更多，且它的矩形在打开后随时可能变（翻转到上方、
- * 跨断点重排）。共用一套会把两边都拧巴，所以各写一套、共用同一个手法。
- *
- * 【手法与 applyTilt 一致 —— 这是顺滑的根本】
- *   1. pointermove 里**只记坐标**，不做任何计算，也不读布局；
- *   2. 真正写样式统一在 rAF 回调里做，同一帧内多次 mousemove 只写一次；
- *   3. 写的是 **CSS 自定义属性**（--pc-n / --pc-r 等），由样式表把它们映射到
- *      各层的 translate3d —— 比较的是「帧内最多 8 次字符串拼装」，
- *      而不是每帧重建整个 inline style 对象或走 Vue 响应式。
- *   4. 矩形只在**需要时**量一次并缓存，指针移动不动就不读布局。
- *
- * 【为什么内层元素用 CSS transition、而不是 JS 逐帧插值】
- * 逐帧插值要自己维护每个层的目标值/当前值/速度，容易写出「追不上就抖」。
- * 这里把「缓动」交给 CSS：指针位移 → 变量立即更新（跟手），
- * 各层用不同 duration 的 transition 去追这个变量（惯性感）。
- * 系数小、动得少的层用稍长的时长（慢一点、有滞后感），
- * 头图这种大幅位移用最短时长（跟得最紧）——视觉上就是「近的跟手、远的滞后」。
- * 变量本身是连续变化的，CSS 插值也是连续的，不会出现位置断层。
- *
- * 【光斑】用两个变量 --pc-mx/--pc-my 表示指针在卡内的百分比位置，
- * 由 .pc-sheen 的 radial-gradient 消费 —— 纯合成层，不触发布局。
- */
-let profileBox = null;          // { el, rect, w, h } 打开后量一次
-let profileRaf = 0;
-const profilePointer = { x: 0, y: 0, inside: false };
-
-/** 资料卡出现时长一次矩形。翻转到上方 / 窗口尺寸变化时由 positionPopover 重新校准。 */
-function measureProfileBox() {
-  const el = popoverRef.value;
-  if (!el || !el.isConnected) {
-    profileBox = null;
-    return null;
-  }
-  const r = el.getBoundingClientRect();
-  profileBox = { el, rect: r, w: r.width || 1, h: r.height || 1 };
-  return profileBox;
-}
-
-/** 指针进入资料卡：量一次矩形（此后指针移动不再读布局）。 */
-function onProfilePointerEnter() {
-  measureProfileBox();
-}
-
-/** 指针在资料卡内移动：只记坐标 + 排一个 rAF，不做计算、不读布局。 */
-function onProfilePointerMove(e) {
-  profilePointer.x = e.clientX;
-  profilePointer.y = e.clientY;
-  profilePointer.inside = true;
-  if (profileRaf) return;
-  profileRaf = requestAnimationFrame(applyProfileTilt);
-}
-
-/** 真正写 CSS 变量的唯一入口（每帧最多一次）。 */
-function applyProfileTilt() {
-  profileRaf = 0;
-  const box = profileBox;
-  if (!box || !box.el || !box.el.isConnected) return;
-
-  // 归一化到 [-1, 1]，0 表示指针在正中间。用 ±1 而不是 ±0.5：
-  // 资料卡比卡片小，指针能到的最远点就是边缘，用满量程更跟手。
-  const n = Math.max(-1, Math.min(1, (profilePointer.x - (box.rect.left + box.w / 2)) / (box.w / 2)));
-  const r = Math.max(-1, Math.min(1, (profilePointer.y - (box.rect.top + box.h / 2)) / (box.h / 2)));
-
-  const el = box.el;
-  // 倾斜：±3deg / ±2.5deg —— 刻意比卡片的 ±6/±8 小，
-  // 用户明确要求「不要大幅度翻转」，这里是「几乎察觉不到、但确实立体」的量级。
-  el.style.setProperty('--pc-n', n.toFixed(3));
-  el.style.setProperty('--pc-r', r.toFixed(3));
-  el.style.setProperty('--pc-ry', (n * 3).toFixed(2) + 'deg');
-  el.style.setProperty('--pc-rx', (-r * 2.5).toFixed(2) + 'deg');
-  // 光斑位置（百分比），交给 .pc-sheen 的 radial-gradient
-  el.style.setProperty('--pc-mx', (((n + 1) / 2) * 100).toFixed(1) + '%');
-  el.style.setProperty('--pc-my', (((r + 1) / 2) * 100).toFixed(1) + '%');
-}
-
-/** 指针离开资料卡：变量归零，靠 CSS transition 自然回位（不瞬间跳回）。 */
-function resetProfileTilt() {
-  if (profileRaf) {
-    cancelAnimationFrame(profileRaf);
-    profileRaf = 0;
-  }
-  profilePointer.inside = false;
-  const box = profileBox;
-  if (box && box.el && box.el.isConnected) {
-    // 归零而不是 removeProperty：removeProperty 会让变量瞬间回到初始值，
-    // transition 不会生效（值凭空消失），表现为「一下子弹回去」。
-    // 写成 0 才能让 CSS 平滑插值到静止态。
-    box.el.style.setProperty('--pc-n', '0');
-    box.el.style.setProperty('--pc-r', '0');
-    box.el.style.setProperty('--pc-ry', '0deg');
-    box.el.style.setProperty('--pc-rx', '0deg');
-    box.el.style.setProperty('--pc-mx', '50%');
-    box.el.style.setProperty('--pc-my', '50%');
-  }
-  profileBox = null;
-}
-
 /* --------------------------------------------------- 照片预览弹层 */
 /**
  * 点头像弹出「这张卡对应的照片」大图（复刻参考站点头像弹 popover 的交互形态，
@@ -1105,8 +945,8 @@ const popoverState = reactive({
   // 浮层总宽（含边框）= 卡片实宽，由 resolvePopoverWidth() 算出后写进内联 style。
   // 【为什么宽度必须由 JS 决定】卡片宽度随列数变化（2~8 列），CSS px 里写不出来。
   width: 0,
-  // 资料卡头图高度（只作调试/自检用，真实高度由样式 .pc-hero 的 aspect-ratio 决定）。
-  heroH: 0,
+  // 照片区高度，只用于给模板一个与 aspect-ratio 一致的兜底高度（不影响定位）。
+  photoHeight: 0,
 });
 
 /**
@@ -1191,16 +1031,30 @@ const NAV_SAFE_TOP_NARROW = 88;
 const POPOVER_FALLBACK_VW = 320;
 
 /**
- * 资料卡的宽度来源：**跟卡片走**（不是固定像素）。
+ * 悬停预览的宽度来源：**跟卡片走**（不是固定像素）。
  *
- * 参考站资料卡是固定 288px，本项目改成跟卡片同宽 —— 用户上一轮明确要求
- * 「悬停出现的宽度和父页面一致」，本轮要求「保留现有卡片的布局、尺寸」。
- * 取的是**卡片实宽**（.card-shell 的 clientWidth），而不是列宽：列上有
+ * 【为什么不再写死 320】用户要求「悬停出现的宽度和它的父页面一致」。
+ * 实测参考站资料卡是固定 288px，但那不是本项目的形态 —— 本项目的浮层显示的是
+ * 照片本身，跟卡片同宽才像「这张卡被放大」，也不会横跨盖住相邻列的卡片。
+ *
+ * 取的是**卡片实宽**（.card-shell 的 clientWidth），而不是列宽 —— 列上有
  * padding-left: 1rem，列宽比卡片宽 16px，用列宽会让浮层左右各探出去 8px。
  *
- * 这个值由 recordCardWidth() 在每次渲染之后写入（见那里的「为什么不能在渲染前读」），
- * 每张卡都存了一份 cardW；缓存是为了兜住「卡片已滚出 DOM」的瞬间。
+ * 这个值由 recordCardWidth() 在每次渲染后写入（见那里的「为什么不能在渲染前读」），
+ * 每张卡都存了一份 cardW；缓存是为了兜住「卡片已滚出 DOM」的瞬间，宁可用旧值也不塌成 0。
+ * 具体实现在下方的 resolvePopoverWidth()，不是常量。
  */
+/**
+ * 弹层底部信息条的高度（px）。必须与 CSS 里 .card-popover-foot 的 height 一致，
+ * 否则算出的总高比实际少这一截，翻到锚点上方时会压到锚点上。
+ */
+const POPOVER_FOOT_HEIGHT = 52;
+/* 【已删除 POPOVER_MIN_HEIGHT】
+ * 旧方案让高度服从「所在一侧预算」hMax = (vh-186)/2，视口极矮时（手机横屏 844x390，
+ * hMax 只有 102px）预算会小于最小可用高度，于是曾有 174px 的下限常量。
+ * 用户明确要求「悬停的卡面高度可以和照片自适应」，高度预算已整体取消，
+ * 该常量失去意义 —— 连同注释一起删掉，避免留下「看似有用实则零引用」的死代码。
+ * 高度现在完全由照片比例决定：见 computePhotoBox()。 */
 
 /** 当前浮层应该多宽：优先用这张卡自己的实宽，取不到就退回缓存/视口兜底。 */
 function resolvePopoverWidth() {
@@ -1213,34 +1067,65 @@ function resolvePopoverWidth() {
   return Math.max(0, Math.min(want, vwOk - POPOVER_MARGIN * 2));
 }
 
-/** 数值钳制：定位里多处要用（横向 left、纵向 top）。 */
+/**
+ * 【宽高比失真的根源】照片区只用 max-height 限高时，盒子宽度【不会】跟着收缩：
+ * 1 号照片 fw/fh = 374/560（0.668）在 1440x900 下算出 318x476，被 max-height 砍到
+ * 318x303 —— 实际比例 1.05（接近正方），img 再被 object-fit: cover 裁成中间一条。
+ * 正解是「高度由宽度和比例算出来，宽度不被任何东西压缩」：
+ *   宽度 = 卡片实宽 − 边框；高度 = 宽度 / ratio。
+ * 宽度定死之后，高度只有一解，比例天然不可能走样。
+ *
+ * 【高度完全自适应，不设上限】用户明确要求「悬停的卡面高度可以和照片自适应」。
+ * 旧实现用 hMax = (vh-186)/2 压高度，导致同一张图在不同视口下高度不同、竖图永远被裁，
+ * 这正是上面那条失真的直接原因。现在照片区高度 = 宽度 / ratio，不再参与任何预算。
+ *
+ * @returns {{ ratio:number, photoWidth:number, photoHeight:number }}
+ *   photoWidth / photoHeight 是照片区等于浮层内宽时的尺寸，
+ *   与 CSS 的 aspect-ratio 渲染结果逐像素一致（高 = 宽 / ratio）。
+ */
+function computePhotoBox() {
+  const card = activeCard.value;
+  // 宽高比缺失或非法时退回 3:4（项目图片多为竖构图），避免 0 / NaN 让整层尺寸塌成 0。
+  const ratio = card && card.fw > 0 && card.fh > 0 ? card.fw / card.fh : 3 / 4;
+
+  // 照片区可用宽度 = 浮层总宽减去左右 1px 边框。
+  const photoMaxWidth = Math.max(1, resolvePopoverWidth() - 2);
+
+  // 高度没有第二约束：给定宽度与比例，高度唯一。
+  return {
+    ratio,
+    photoWidth: photoMaxWidth,
+    photoHeight: Math.ceil(photoMaxWidth / ratio),
+  };
+}
+
 const clampNum = (v, min, max) => Math.max(min, Math.min(max, v));
 
 /**
- * 资料卡的尺寸。
+ * 量悬停预览的显示尺寸：宽度 = 卡片实宽，高度 = 照片区高度 + 信息条 + 边框。
  *
- * 【与上一轮的区别】上一轮浮层是「照片 + 信息条」，高度必须由照片宽高比精确推出，
- * 才能在渲染前判断放不放得下。本轮改成**资料卡**：高度由内容（头图 + 头像 +
- * 文字 + 统计 + 按钮）决定，是一个与照片比例无关的固定结构高度。
- * 头图取固定比例（宽 16:10，见样式 .pc-hero），所以整卡高度只随宽度线性变化。
- *
- * 【为什么仍然在渲染前算】computePopoverPosition 要用高度判断「下方放不放得下」，
+ * 【为什么必须在渲染前算出来】computePopoverPosition 要用高度判断「下方放不放得下」，
  * 否则得先渲染一次、量完再摆，第一帧会闪一下。
- * 这里的常数必须与样式表里的像素值一一对应，改样式就要同步改这里。
+ * 照片高度由 activeCard 的 fw/fh 决定，所以每张图算出来都不一样。
+ *
+ * @returns {{ width:number, height:number, natural:number, photoBox:object }}
  */
-const PC_HERO_RATIO = 16 / 10;   // 头图高 = 宽 / 1.6
-const PC_BODY_H = 62;            // 名字 + 签名（含上下内边距）
-const PC_STATS_H = 52;           // 三列统计
-const PC_ACTIONS_H = 52;         // 通栏按钮一行（含底部内边距）
-const PC_PAD = 16;               // 底部内边距
-const POPOVER_BORDER = 2;        // 上下 1px 边框
-
 function measurePopoverSize() {
+  // 【尺寸唯一来源是 computePhotoBox】照片区宽高由它算，这里只负责把它加成
+  // 「浮层总宽 / 总高」。完全解析计算，不读任何布局。
+  // 绝不使用 offsetHeight 回填：量到的是图片未加载时的值，会把尺寸永久记错（棘轮效应）。
+  const box = computePhotoBox();
   const width = resolvePopoverWidth();
-  const inner = Math.max(0, width - POPOVER_BORDER);
-  const heroH = Math.round(inner / PC_HERO_RATIO);
-  const natural = heroH + PC_BODY_H + PC_STATS_H + PC_ACTIONS_H + PC_PAD + POPOVER_BORDER;
-  return { width, height: natural, natural, heroH };
+  const natural = Math.round(box.photoHeight + POPOVER_FOOT_HEIGHT + 2);
+
+  // 【高度完全自适应：不再压到侧边预算里】
+  // 旧版为了「浮层永不覆盖锚点」把高度压成 H := min(自然高度, (vh-186)/2)，
+  // 代价是竖图永远被砍 1/3 左右、同一张图在不同视口高度不一致。
+  // 用户要求「卡面高度和照片自适应」，所以这里放开：高度就是照片自然高度。
+  // 副作用（已实测，见 记忆/04「第十一批」）：浮层可能高于锚点所在一侧的剩余空间，
+  // 于是允许覆盖或溢出视口 —— 但下面的 computePopoverPosition 仍会选「空间更大」的一侧，
+  // 把超出量压到最小。关闭链路另有一道不依赖几何的判据，不会因此死锁。
+  return { width, height: natural, natural, photoBox: box };
 }
 
 
@@ -1315,8 +1200,8 @@ function computePopoverPosition(rect, size) {
     left: Math.round(left),
     // 浮层总宽（含左右 1px 边框）= 卡片实宽，模板写进内联 width。
     width: Math.max(0, Math.round(size.width)),
-    // 头图高度：样式里 .pc-hero 用同一公式（宽 / 1.6），这里只为调试与自检保留。
-    heroH: Math.round(size.heroH || 0),
+    // 照片区高度只用于兜底展示；真实高度由 CSS aspect-ratio 从宽度算出。
+    photoHeight: Math.max(0, Math.round(size.photoBox ? size.photoBox.photoHeight : size.height - POPOVER_FOOT_HEIGHT - 2)),
   };
 }
 
@@ -1677,8 +1562,6 @@ function openPreview(anchor, card) {
   if (!anchor || !anchor.isConnected) return;
   closeProbeCount = 0;   // 新一轮悬停，重排计数归零
   clearCloseTimer();
-  // 新卡重新开始跟随：把上一张残留的倾斜变量清掉，否则新卡会带着旧角度出现。
-  resetProfileTilt();
   // 顺序：先关掉上一张（动画会走 closing，但新弹层直接替换 ref），再设置新锚点。
   activeCard.value = card;
   popoverAnchor = anchor;
@@ -1717,19 +1600,16 @@ function openPreview(anchor, card) {
     if (!popoverAnchor.isConnected) return;
     const rect = popoverAnchor.getBoundingClientRect();
     const size = measurePopoverSize();
-    // 【高度在这里用实测值替换】资料卡的高度由内容决定（CSS 布局），
-    // JS 里的 PC_* 常量只是「渲染前预估」，与真实值最多差几像素。
-    // 定位只用这一次高度判断「下方放不放得下」，用实测值比用预估更准；
-    // 而且资料卡没有上一轮那种「被 max-height 裁剪后回填会把尺寸永久记小」的棘轮风险。
+    // 【photoBox 必须原样传下去】上一版这里手搓 { width, height } 丢掉了 photoBox，
+    // computePopoverPosition 于是回退到 size.width - 2（= 318）当照片区宽度，
+    // 把首次打开时算对的 171 又覆盖回满宽 —— 竖图被压成 1.05 的元凶就是这里。
+    // 宽度覆盖只影响「浮层总宽」的定位，照片区尺寸始终以 photoBox 为准。
     Object.assign(popoverState, computePopoverPosition(rect, {
       width: el.offsetWidth || size.width,
-      height: el.offsetHeight || size.height,
-      natural: el.offsetHeight || size.natural,
-      heroH: size.heroH,
+      height: size.height,
+      natural: size.natural,
+      photoBox: size.photoBox,
     }));
-    // 资料卡的真实矩形此刻才稳定：把鼠标跟随的基准重新校准一次，
-    // 否则首次 hover 时 profileBox 还是空的（会退化成按中心点计算，倾斜偏大）。
-    measureProfileBox();
     // 校正后的位置才是后续滚动跟随的基准，必须重新记一次。
     captureScrollBase();
     // 校正可能让位置整体动了一截，把 rAF 比对基准同步过来，否则下一帧会把它当成
@@ -2137,33 +2017,6 @@ function openViewerFromCard(card) {
   clearHoverTimers();
   closePreview();
   openViewer(card);
-}
-
-/**
- * 资料卡里的「定位照片」：关闭资料卡，把这张卡滚到视口中央并闪一下描边。
- *
- * 【为什么需要这个按钮】资料卡开在头像上，用户看资料时那张照片可能已经滚出视口；
- * 参考站对应位置是「查看主页」，本项目没有主页，换成对本页有意义的动作。
- */
-function jumpToCard(card) {
-  if (!card) return;
-  clearHoverTimers();
-  closePreview();
-  const shell = gridRef.value?.querySelector(`.card-shell[data-uid="${card.uid}"]`);
-  const page = pageRef.value;
-  if (!shell || !page) return;
-  const shellRect = shell.getBoundingClientRect();
-  const pageRect = page.getBoundingClientRect();
-  // 用「当前顶部 + 相对偏移」换算，不用 offsetTop 链：卡片在列里、列在 flex 容器里，
-  // offsetTop 的参照物随布局变化，直接算视口差值更稳。
-  const target = page.scrollTop + (shellRect.top - pageRect.top) - (pageRect.height - shellRect.height) / 2;
-  page.scrollTo({ top: Math.max(0, target), behavior: prefersReducedMotion() ? 'auto' : 'smooth' });
-  // 高亮：加一个类，动画结束自己摘掉（不依赖 IntersectionObserver）
-  shell.classList.remove('is-located');
-  // 强制重排让同名动画能重播（连续点两次也要闪）
-  void shell.offsetWidth;
-  shell.classList.add('is-located');
-  setTimeout(() => shell.classList.remove('is-located'), 1400);
 }
 
 /** 打开大图。记录来源焦点，关闭时还原。 */
@@ -2835,55 +2688,6 @@ columns.value = assignColumns(columnCount.value);
   transform: scale(1.15) rotate(10deg);
 }
 
-/* ---------------------------------------------------------------
-   整张卡面的「查看大图」点击层
-   ---------------------------------------------------------------
-   【为什么是绝对定位的按钮盖住卡面】
-   .card-glass 里已经有一个头像 button，button 不能嵌套 —— 只能做成兄弟层。
-   它铺满整个卡片，z-index 低于头像（头像在上层，仍然负责弹资料卡），
-   于是「点头像 = 看资料卡、点卡面其它地方 = 看大图」，两者互不抢。
-
-   【为什么用 inset:0 + 透明背景】不改变任何视觉，只接管命中区域。
-   注意不能用 opacity:0 —— 那会让元素变得可穿透点击（pointer-events 仍有效，
-   但部分辅助技术会隐藏它）；这里用透明背景，元素本身是完全可见的实体。
-   --------------------------------------------------------------- */
-.card-open {
-  position: absolute;
-  inset: 0;
-  z-index: 5;
-  margin: 0;
-  padding: 0;
-  border: 0;
-  border-radius: inherit;
-  background: transparent;
-  cursor: zoom-in;
-  -webkit-tap-highlight-color: transparent;
-}
-
-/* 键盘焦点环：画在卡面外圈（内圈会被 overflow:hidden 裁掉） */
-.card-open:focus-visible {
-  outline: 2px solid var(--pictorial-accent);
-  outline-offset: 2px;
-  border-radius: 24px;
-}
-
-/* 「定位照片」按钮滚到目标卡时的提示描边 */
-.card-shell.is-located {
-  animation: cardLocatedFlash 1.3s ease-out;
-}
-
-@keyframes cardLocatedFlash {
-  0% {
-    box-shadow: 0 0 0 0 rgba(163, 230, 53, 0.75);
-  }
-  40% {
-    box-shadow: 0 0 0 4px rgba(163, 230, 53, 0.75);
-  }
-  100% {
-    box-shadow: 0 0 0 0 rgba(163, 230, 53, 0);
-  }
-}
-
 .card-author span {
   position: relative;
   top: 0.75rem;
@@ -2980,7 +2784,7 @@ columns.value = assignColumns(columnCount.value);
   /*
    * 【overflow 必须是 hidden —— 圆角裁切完全依赖它】
    * 浮层的 border-radius: 16px 只有在 overflow: hidden 时才会裁切子元素；
-   * .pc-hero（头图）自身的圆角是 0，它靠父级裁切才得到上面的两个圆角。
+   * .card-popover-photo 自身的 border-radius 是 0，它靠父级裁切才得到圆角。
    * 曾经为了修手机端滑动改成 visible，实测截图里照片四角变直角、顶出圆角轮廓 ——
    * 所以这里保持 hidden。手机端的滚动问题【不是】它造成的，见下方 touch 转发方案。
    */
@@ -3080,95 +2884,45 @@ columns.value = assignColumns(columnCount.value);
   }
 }
 
-/* ---------------------------------------------------------------
-   整卡 3D 倾斜（鼠标跟随的外层）
-   ---------------------------------------------------------------
-   【为什么用一个内层包裹，而不是直接 rotate 在 .card-popover 上】
-   .card-popover 的 transform 已被入场/出场动画（translateY + scale）占用，
-   动画的 fill-mode: both 会把 transform 一直钉在关键帧的终值上，
-   直接再写 rotate 会被动画覆盖；而我们在它上面改 transform 也会打断动画。
-   所以倾斜放在一个**不动画**的内层上，两者互不干扰。
 
-   【为什么不加 translateZ 做「离屏拉近」】会额外建层，且与 scale 效果重叠，
-   用户要的是「细腻」，不是「弹出来」。
+/* ---------------- 悬停预览：这张卡对应的照片 ----------------
+   需求（用户 m05970）：悬停头像弹出的必须是这张卡的照片本身，而不是资料卡。
 
-   perspective 给父级才能让子层的 translate3d 产生真实远近差；
-   没有 perspective 时 translateZ 无效，rotate 也会退化成二维压扁。
-   --------------------------------------------------------------- */
-.pc-tilt {
-  /*
-   * 倾斜量：±3deg / ±2.5deg。刻意远小于卡片的 ±6/±8 ——
-   * 用户明确要求「不要大幅度翻转」，这里只做「看得出立体、意识不到在转」的量级。
-   */
-  transform:
-    perspective(900px)
-    rotateX(var(--pc-rx, 0deg))
-    rotateY(var(--pc-ry, 0deg));
-  /* 缓动的来源：变量突变时由它插值；时长稍长于内层，让整卡比内容层「慢半拍」，
-     形成「内容跟手、卡片本体有质量感」的层次 */
-  transition: transform 0.36s cubic-bezier(0.22, 0.61, 0.36, 1);
-  transform-style: preserve-3d;
-  will-change: transform;
-}
-
-
-/* ================================================================
-   个人资料卡的内容层与鼠标跟随视差
-   ----------------------------------------------------------------
-   【结构】头图 → 圆形头像 → 名字签名 → 三列统计 → 按钮 → 光斑
-   每一层是独立的 translate3d，由 --pc-* 变量驱动（见脚本 applyProfileTilt）。
-
-   【为什么用 CSS 变量 + transition，而不是 JS 逐帧插值】
-   指针移动时只更新变量（跟手、无延迟），各层用不同时长的 transition 去追 ——
-   「近的层跟得快、远的层稍滞后」的层次感就是这个时长差造成的。
-   变量连续变化 + CSS 插值连续，不会出现位置断层；指针停下时自然收敛，不抖。
-
-   【为什么每层单独写 translate3d 而不是给父级一个 transform】
-   父级倾斜（.card-popover 的 rotateX/rotateY）负责「整卡立体感」，
-   子层位移负责「层与层之间的相对错动」。两者叠加才有深度；
-   若子层也倾斜，会与父级叠加成过度旋转。
-   ================================================================ */
-
-/* ---- 头图：视差最大的一层（往后拉得最远） ---- */
-.pc-hero {
+   【照片区用内联 aspect-ratio】模板里给 .card-popover-photo 写了
+   aspectRatio: fw / fh，图片进 DOM 之前浮层就已占好正确高度；
+   computePopoverPosition 因此不会先按错误高度判「放得下」再被撑开。
+   下面的 aspect-ratio: 3 / 4 只是内联值缺失时的兜底（例如清单条目没有 w/h）。 */
+.card-popover-photo {
   position: relative;
   width: 100%;
-  /* 高度与脚本 PC_HERO_RATIO 同源：宽 / 1.6 */
-  aspect-ratio: 16 / 10;
+  /* 内联 aspect-ratio 之外的兜底：清单条目缺 w/h 时按 3:4（与 JS 侧 0.75 同源）。 */
+  aspect-ratio: 3 / 4;
+  /*
+   * 【高度不设任何上限，这是需求本身】
+   * 用户要求「悬停的卡面高度可以和照片自适应」。旧版这里绑了
+   * max-height: min(480px, calc(50dvh - 147px))，以及 JS 侧的 hMax=(vh-186)/2，
+   * 后果是竖图永远被砍掉一截、同一张图换个视口高度就变。
+   * 现在：宽度定死（= 卡片实宽）→ 高度 = 宽度 / 宽高比，唯一解，不可能走样。
+   *
+   * 【为什么不再需要 margin-inline: auto】照片区始终占满浮层内宽，不存在「变窄」的情况。
+   * 【为什么不再需要 max-width】宽度本身就是浮层内宽，没有更强的约束可加。
+   * 曾经这里靠「max-width + max-height 成对给出 + JS 等比缩宽度」来防失真，
+   * 那套机制只在「高度要受限」时才需要 —— 现在高度不受限，机制整体退场。
+   */
   overflow: hidden;
   background: rgba(255, 255, 255, 0.06);
-  /* 系数 1.0：指针移动时头图位移最大，读作「最远的一层」 */
-  transform: translate3d(calc(var(--pc-n, 0) * 12px), calc(var(--pc-r, 0) * 9px), 0) scale(1.08);
-  transition: transform 0.18s cubic-bezier(0.22, 0.61, 0.36, 1);
-  will-change: transform;
+  flex: none;
 }
 
-.pc-hero-img {
+.card-popover-photo img {
   display: block;
   width: 100%;
   height: 100%;
   object-fit: cover;
-  /* 图片自身再反向微移一点，形成「照片在窗内浮动」的双层视差 */
-  transform: translate3d(calc(var(--pc-n, 0) * -6px), calc(var(--pc-r, 0) * -5px), 0);
-  transition: transform 0.24s cubic-bezier(0.22, 0.61, 0.36, 1);
-  will-change: transform;
 }
 
-/* 头图底部压暗，让下面的头像/名字有对比度（参考站同款渐隐） */
-.pc-hero-fade {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: linear-gradient(
-    to bottom,
-    rgba(12, 12, 18, 0) 42%,
-    rgba(12, 12, 18, 0.55) 76%,
-    rgba(12, 12, 18, 0.86) 100%
-  );
-}
-
-/* 编号胶囊：右上角 */
-.pc-badge {
+/* 编号胶囊：右上角，压在照片上。深色半透明底 + 描边，任何亮度的照片上都可读。 */
+.card-popover-no {
   position: absolute;
   top: 8px;
   right: 8px;
@@ -3183,160 +2937,59 @@ columns.value = assignColumns(columnCount.value);
   color: rgba(255, 255, 255, 0.92);
   font-variant-numeric: tabular-nums;
   pointer-events: none;
-  transform: translate3d(calc(var(--pc-n, 0) * 5px), calc(var(--pc-r, 0) * 4px), 0);
-  transition: transform 0.2s cubic-bezier(0.22, 0.61, 0.36, 1);
 }
 
-/* ---- 圆形头像：压在头图下沿，位移幅度中等 ---- */
-.pc-avatar {
-  position: relative;
-  width: 56px;
-  height: 56px;
-  margin: -28px 0 0 16px;
-  border-radius: 50%;
-  overflow: hidden;
-  border: 2px solid rgba(255, 255, 255, 0.22);
-  background: rgba(20, 20, 28, 0.9);
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.55);
-  /* 系数 0.5：头像夹在「远」与「近」之间 */
-  transform: translate3d(calc(var(--pc-n, 0) * 7px), calc(var(--pc-r, 0) * 5px), 0);
-  transition: transform 0.22s cubic-bezier(0.22, 0.61, 0.36, 1);
-  will-change: transform;
-}
-
-.pc-avatar img {
-  display: block;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-/* ---- 文字区：位移最小（读作「最近的一层」，最贴屏幕） ---- */
-.pc-body {
-  padding: 8px 16px 0;
+/* 底部信息条：高度必须与脚本里的 POPOVER_FOOT_HEIGHT 一致（52），
+   否则 measurePopoverSize() 算出的总高与实际渲染高度对不上，
+   翻到锚点上方时会多出 52px 的偏差。 */
+.card-popover-foot {
   box-sizing: border-box;
-  /* 高度与脚本 PC_BODY_H 同源（62 = 上下内边距 + 两行文字） */
-  height: 62px;
-  transform: translate3d(calc(var(--pc-n, 0) * 2.5px), calc(var(--pc-r, 0) * 2px), 0);
-  transition: transform 0.28s cubic-bezier(0.22, 0.61, 0.36, 1);
-}
-
-.pc-name {
-  margin: 0;
-  font-size: 16px;
-  font-weight: 600;
-  line-height: 22px;
-  color: #fff;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.pc-bio {
-  margin: 2px 0 0;
-  font-size: 12px;
-  line-height: 18px;
-  color: rgba(255, 255, 255, 0.55);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* ---- 三列统计 ---- */
-.pc-stats {
   display: flex;
   align-items: center;
-  box-sizing: border-box;
+  justify-content: space-between;
+  gap: 10px;
   height: 52px;
-  padding: 0 16px;
-  transform: translate3d(calc(var(--pc-n, 0) * 2px), calc(var(--pc-r, 0) * 1.5px), 0);
-  transition: transform 0.3s cubic-bezier(0.22, 0.61, 0.36, 1);
+  padding: 0 12px;
+  flex: none;
 }
 
-.pc-stat {
-  flex: 1 1 0;
+.card-popover-hint {
   min-width: 0;
-  text-align: center;
-}
-
-.pc-stat b {
-  display: block;
-  font-size: 15px;
-  font-weight: 600;
-  line-height: 20px;
-  color: #fff;
-  font-variant-numeric: tabular-nums;
-}
-
-.pc-stat span {
-  display: block;
-  font-size: 11px;
+  font-size: 12px;
   line-height: 16px;
   color: rgba(255, 255, 255, 0.5);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-/* ---- 按钮区：两行，主按钮青柠实心（与卡片主题色一致） ---- */
-.pc-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+.card-popover-btn {
+  flex: 1 1 0;
   box-sizing: border-box;
-  padding: 0 16px 16px;
-  transform: translate3d(calc(var(--pc-n, 0) * 1.5px), calc(var(--pc-r, 0) * 1px), 0);
-  transition: transform 0.32s cubic-bezier(0.22, 0.61, 0.36, 1);
-}
-
-.pc-btn {
-  flex: 1 1 auto;
-  min-width: 0;
-  box-sizing: border-box;
-  padding: 9px 0;
-  border-radius: 10px;
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  background: rgba(255, 255, 255, 0.06);
-  color: #fff;
+  padding: 10px 0;
+  border-radius: 12px;
+  border: 1px solid transparent;
   font: inherit;
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   cursor: pointer;
   transition: filter 0.2s ease, background-color 0.2s ease;
 }
 
-.pc-btn:hover {
-  background-color: rgba(255, 255, 255, 0.12);
+/* 主按钮用画报页的青柠主题色 #a3e635（= rgb(163,230,53)），与参考站同色。 */
+.card-popover-btn.is-primary {
+  background-color: rgb(163, 230, 53);
+  color: #000;
+  box-shadow: 0 4px 18px rgba(163, 230, 53, 0.25);
 }
 
-.pc-btn:focus-visible {
+.card-popover-btn.is-primary:hover {
+  filter: brightness(1.08);
+}
+
+.card-popover-btn.is-primary:focus-visible {
   outline: 2px solid rgba(163, 230, 53, 0.9);
   outline-offset: 2px;
-}
-
-/* 跟随鼠标的光斑：径向渐变，位置由 --pc-mx / --pc-my 给 */
-.pc-sheen {
-  position: absolute;
-  inset: 0;
-  z-index: 3;
-  pointer-events: none;
-  border-radius: inherit;
-  /*
-   * 【为什么用 background 的 radial-gradient 而不是再叠一层带 transform 的元素】
-   * 光斑只需要跟着指针平移，用 gradient 的 at 位置最省：不额外建层，
-   * 也不会被 overflow:hidden 裁出硬边。
-   * 透明度很低（0.10 → 0），只在深色玻璃上形成一层「有光照到」的错觉。
-   */
-  background: radial-gradient(
-    260px circle at var(--pc-mx, 50%) var(--pc-my, 50%),
-    rgba(255, 255, 255, 0.1),
-    rgba(255, 255, 255, 0.03) 42%,
-    transparent 68%
-  );
-  opacity: 0;
-  transition: opacity 0.28s ease;
-}
-
-/* 指针进入资料卡后光斑淡入；离开后淡出归位 */
-.card-popover:hover .pc-sheen {
-  opacity: 1;
 }
 
 /* 弹层本身被程序化聚焦时（tabindex=-1）不要描边：
