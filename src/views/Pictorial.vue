@@ -700,6 +700,8 @@ onUnmounted(() => {
   popoverState.left = 0;
   popoverState.photoHeight = 0;
   popoverState.width = 0;
+  // 卸载时把卡片的抬升态一并摘掉：卡片 DOM 也要销毁了，但类可能残留在复用节点上
+  unmarkPreviewingCard();
 
   if (rafId) cancelAnimationFrame(rafId);
   rafId = 0;
@@ -1549,6 +1551,39 @@ function clearCloseTimer() {
 }
 
 /**
+ * 当前处于「预览浮层开着」状态的卡片外壳（用来增删 .is-preview-open）。
+ * 用普通变量而非响应式：它只影响一个 CSS 类，不需要触发渲染。
+ */
+let previewingShell = null;
+
+/**
+ * 把这张卡的抬升态钉住（浮层开着期间）。
+ *
+ * 【为什么需要】浮层是 body 下的 fixed 层，盖在卡片自己身上。指针移进浮层后
+ * 命中测试落在浮层上，`.card-shell:hover` 变 false，`translateY(-10px) scale(1.05)`
+ * 被撤销 —— 卡片下沉、头像跟着走，就是「进入卡片内部后运动不连续」的根因。
+ * 这里加上与 :hover 同值的类，指针在卡片与浮层之间穿梭时 transform 恒定。
+ *
+ * @param {HTMLElement} anchor 头像按钮（用它找到所属的 .card-shell）
+ */
+function markPreviewingCard(anchor) {
+  const shell = anchor && anchor.closest ? anchor.closest('.card-shell') : null;
+  if (previewingShell && previewingShell !== shell) {
+    previewingShell.classList.remove('is-preview-open');
+  }
+  previewingShell = shell;
+  if (shell) shell.classList.add('is-preview-open');
+}
+
+/** 解除抬升态（浮层关闭/组件卸载时调用，幂等）。 */
+function unmarkPreviewingCard() {
+  if (previewingShell) {
+    previewingShell.classList.remove('is-preview-open');
+    previewingShell = null;
+  }
+}
+
+/**
  * 打开弹层（只服务于 togglePreview：调用方已保证「同一时刻只有一个」——先 close 再 open）。
  *
  * @param {HTMLElement} anchor 被点的头像按钮
@@ -1562,6 +1597,10 @@ function openPreview(anchor, card) {
   if (!anchor || !anchor.isConnected) return;
   closeProbeCount = 0;   // 新一轮悬停，重排计数归零
   clearCloseTimer();
+  // 【卡片保持抬升态】浮层盖在卡片自己身上，指针移进去会让 :hover 失效、
+  // 卡片下沉 10px 并把头像一起带走 —— 这就是「进入卡片内部后运动不连续」的根因。
+  // 用类名把抬升态钉住，取值与 :hover 完全一致，穿梭时 transform 不再变化。
+  markPreviewingCard(anchor);
   // 顺序：先关掉上一张（动画会走 closing，但新弹层直接替换 ref），再设置新锚点。
   activeCard.value = card;
   popoverAnchor = anchor;
@@ -1635,6 +1674,8 @@ function closePreview() {
     popoverAnim.value = 'idle';
     popoverAnchor = null;
     hoverAnchorEl = null;
+    // 浮层是同步消失的，抬升态也同步解除，否则卡片会「悬空」停留
+    unmarkPreviewingCard();
     return;
   }
   const anim = POPOVER_DURATION;
@@ -1648,6 +1689,9 @@ function closePreview() {
     popoverAnim.value = 'idle';
     popoverAnchor = null;
     hoverAnchorEl = null;
+    // 【等浮层真的从 DOM 移除后再解除抬升态】提前解会让卡片在浮层淡出的
+    // 那 300ms 里先掉下去，反而制造一次新的跳变。
+    unmarkPreviewingCard();
   }, anim);
 }
 
@@ -2069,6 +2113,9 @@ const onPopoverAnimEnd = (e) => {
   popoverAnim.value = 'idle';
   popoverAnchor = null;
   hoverAnchorEl = null;
+  // 【正常卸载路径在这里】出场动画结束、浮层从 DOM 移除后才解除卡片的抬升态。
+  // 漏了这一句会让 is-preview-open 永久留在卡片上（卡片一直悬空抬升）。
+  unmarkPreviewingCard();
 };
 
 /**
@@ -2390,7 +2437,22 @@ columns.value = assignColumns(columnCount.value);
 
 /* 触屏没有真悬停：不加这层门控，移动端点过卡片会留下"粘住的"抬升态。 */
 @media (hover: hover) and (pointer: fine) {
-  .card-shell:hover {
+  .card-shell:hover,
+  /*
+   * 【预览浮层打开期间，卡片保持「被悬停」的抬升态 —— 修「进入卡片内部运动不连续」】
+   *
+   * 浮层是 Teleport 到 body 的 fixed 层，盖在卡片自己身上。指针从头像往下移进浮层时，
+   * 命中测试落在浮层上，`.card-shell:hover` 立刻变 false，于是
+   *   transform: translateY(-10px) scale(1.05)
+   * 被撤销，卡片在 0.45s 内下沉 10px、缩小 5%，把头像一起带走。
+   * 实测（1440x900，真鼠标）：头像顶边 399.9 → 410.1（10.2px 位移），
+   * 且在浮层上边界来回移动 6 次时 :hover 翻转了 11 次 —— 就是肉眼看到的「抖」。
+   *
+   * 解法：类名由脚本在 openPreview/closePreview 时增删，取值与 :hover 完全一致，
+   * 所以指针在卡片与浮层之间穿梭时 transform 恒定不变，不再有任何跳变或翻转。
+   * 只影响「这张卡自己的浮层开着」的那段时间，不改变任何视觉参数。
+   */
+  .card-shell.is-preview-open {
     transform: translateY(-10px) scale(1.05);
     z-index: 20;
   }
