@@ -209,28 +209,25 @@
       <!--
         悬停预览：直接显示这张卡对应的照片本身（1600px 版）。
 
-        【为什么用 full 而不是 src】src 是缩略图（最长边 560px），放大到 320px 宽的浮层里
-        还算清楚，但用户接下来多半想看细节。full 是同一张图的 1600px 版，
-        20 张合计 2.55 MB 且只在悬停时按需加载一张，代价可接受。
+        【为什么用 full 而不是 src】src 是缩略图（最长边 560px），放大到卡片宽度后
+        会明显发虚。full 是同一张图的 1600px 版，且只在悬停时按需加载一张，代价可接受。
 
         【尺寸由宽高比决定】外层 .card-popover-photo 的 aspect-ratio 用 fw/fh 内联写死，
         这样图片进 DOM 之前浮层就已经占好正确高度，computePopoverPosition 不会先按
-        一个错误高度判「放得下」再被撑开 —— 这是上一版资料卡用固定高度 339 的原因，
-        照片形态必须改成按比例算。
+        一个错误高度判「放得下」再被撑开。
 
-        【max-width 与 max-height 必须成对给出】只给 max-height 时，aspect-ratio 算出的
-        高度被砍、宽度不跟着缩，盒子实际宽高比 = 满宽 / 限高（竖图约 1.05，接近正方），
-        照片被 object-fit: cover 裁成中间一条 —— 用户反馈的「比例很怪」。
-        现在高度受限时 JS 已把宽度等比算小，模板同时把两个上限写进去，
-        CSS 的 margin-inline: auto 再让变窄的照片在浮层里居中。
+        【宽度跟卡片走、高度完全自适应】
+        浮层宽度由 .card-popover 的宽度决定（= 卡片实宽，见 resolvePopoverWidth）；
+        照片区 width: 100%，高度只由 aspect-ratio 推出，因此恒等于「宽度 / (fw/fh)」。
+        这里【不再绑 max-width / max-height】：
+          · 绑 max-height 会砍高度而不缩宽度，比例变成「满宽 / 限高」→ 照片被 cover 裁掉
+            （就是用户反馈过两次的「比例很怪」）；
+          · 用户本轮要求「高度可以和照片自适应」，高度本来就不该再被任何预算压。
+        比例有三重保证：宽度定死、高度由 aspect-ratio 算、img 用 object-fit: cover 兜底。
       -->
       <div
         class="card-popover-photo"
-        :style="{
-          aspectRatio: activeCard.fw + ' / ' + activeCard.fh,
-          maxWidth: popoverState.photoWidth ? popoverState.photoWidth + 'px' : null,
-          maxHeight: popoverState.photoHeight ? popoverState.photoHeight + 'px' : null,
-        }"
+        :style="{ aspectRatio: activeCard.fw + ' / ' + activeCard.fh }"
       >
         <img
           :src="activeCard.full"
@@ -338,6 +335,11 @@ const cards = IMAGE_POOL
     // 首屏前几张优先加载：全部 lazy 会让 LCP 等到滚动容器的懒加载判定，
     // 首屏出现一段空白。6 张 ≈ 一屏两行的量。
     eager: i < 6,
+    // 卡片实宽（CSS px），由 recordCardWidth() 在每次渲染之后写入。
+    // 【不要在这里或 assignColumns 里读】assignColumns 跑在渲染前，DOM 还是旧列宽的布局。
+    // 悬停预览浮层要「和卡片同宽」，打开时直接读这个值，不再临时量布局。
+    // 初始 0 表示「还没测过」，resolvePopoverWidth() 会退回缓存或视口兜底。
+    cardW: 0,
   }));
 
 /* ------------------------------------------------------------ 列数 */
@@ -433,7 +435,20 @@ function assignColumns(count) {
   // clientWidth 含 padding，比卡片宽约 16px（桌面 5 列时 278 vs 262）。
   // 按含 padding 的宽度估会高估图片高度约 6%，且误差随 1/ratio 放大 ——
   // 横图误差小、竖图误差大，正好和「竖图更高」的方向叠加。
-  const columnWidth = gridRef.value?.querySelector('.card-shell')?.clientWidth || 262;
+  // 【但只在 measured 为空、真的要做估算时才读它】
+  // measured 非空 = 卡片已经渲染过，querySelector('.card-shell') 此刻量到的是
+  // 【改名之前的旧布局】。onResize 是先改 columnCount、再同步调 rebuild()，
+  // 读 DOM 就会拿到旧列数的卡片宽度（实测 1440→1023：真宽 240，读到 262），
+  // 估算普遍偏高，贪心分配的列序可能被带偏。
+  // 此时改用实测值（它已是旧列宽的绝对值，但只在「还没实测的新卡」上兜底用，
+  // 而 measured 非空时这种卡几乎不存在），宁可不算宽度也不读过期布局。
+  const columnWidth = measured.size
+    ? 0
+    : (gridRef.value?.querySelector('.card-shell')?.clientWidth || 262);
+
+  // 【卡片实宽由 recordCardWidth() 在渲染之后统一记录，这里不读】
+  // 这里处于「渲染前」，DOM 还是上一次列数的布局；而且列数没变时 rebuild 根本不会
+  // 走到这里，永远没有第二次纠正的机会。详见 recordCardWidth() 的注释。
 
   for (const card of cards) {
     let target = 0;
@@ -441,7 +456,7 @@ function assignColumns(count) {
       if (totals[i] < totals[target]) target = i;
     }
     buckets[target].push(card);
-    totals[target] += measured.get(card.uid) || estimateHeight(columnWidth, card);
+    totals[target] += measured.get(card.uid) || (columnWidth ? estimateHeight(columnWidth, card) : 0);
   }
   return buckets;
 }
@@ -550,7 +565,35 @@ function observeCards() {
 
 /* --------------------------------------------------------- 布局调度 */
 
-/** 重新分配并（必要时）重新渲染，然后实测高度、修正分配、重新观察。 */
+/**
+ * 卡片实宽的缓存（CSS px，不含 transform）。
+ * 【为什么声明在这里而不是和浮层常量放一起】recordCardWidth() 会写它，
+ * 而 recordCardWidth() 在第一次 render/rebuild 时就要调用；声明放在文件后面的
+ * `const`/`let` 区块里会踩到暂时性死区（TDZ），初始化阶段直接 ReferenceError。
+ */
+let cachedCardWidth = 0;
+
+/**
+ * 把「卡片实宽」记下来，供悬停浮层使用（浮层要求与卡片同宽）。
+ *
+ * 【必须单独成一个函数、且在渲染之后调用】
+ * 曾经把它写在 assignColumns 里顺手读 —— 那是**渲染前**，DOM 还是上一次列数的布局。
+ * 实测 1440(5 列) → 1280(5 列，但列宽 230) 时读到的是旧的 262、375 时也读到 175，
+ * 浮层因此比卡片宽出一截。列数没变时 rebuild 里的 assignColumns 虽然还会再跑一次，
+ * 但那一次读到的仍是同一份「渲染前」的旧布局，所以「顺手读」永远没有纠正的机会。
+ *
+ * 【为什么用 clientWidth 而不是 getBoundingClientRect().width】
+ * 卡片带 3D 倾斜视差 transform，悬停时 scale(1.05)、倾斜时还会把包围盒再撑宽，
+ * rect 量到的是**变换后**的尺寸（实测 262 的卡读到 276），拿它当浮层宽度会随鼠标抖动。
+ * clientWidth 是布局宽度，不受 transform 影响。
+ */
+function recordCardWidth() {
+  const w = gridRef.value?.querySelector('.card-shell')?.clientWidth || 0;
+  if (w <= 0) return;
+  cachedCardWidth = w;
+  for (const card of cards) card.cardW = w;
+}
+
 /**
  * 重新分配并（必要时）重新渲染，然后实测高度、修正分配、重新观察。
  *
@@ -569,6 +612,11 @@ async function rebuild() {
     columns.value = next;
     await nextTick();
   }
+
+  // 【卡片宽度在渲染之后记】此时 DOM 已按当前列数排好，clientWidth 才是真实值。
+  // 但若上面没触发重渲染（分配结果没变），DOM 还是上一次的 —— 那也没关系：
+  // 列数没变时列宽本来就不变；列数变了 layoutKey 必然变（列数组长度不同），一定重渲染。
+  recordCardWidth();
 
   // 实测纠正：首次渲染后卡片真实高度才可读。等高时这一步不会改变分配
   // （layoutKey 相同 → 不触发重渲染），只有出现高度不一的卡片才真的重排。
@@ -590,13 +638,29 @@ let rafId = 0;
 /**
  * resize 用 requestAnimationFrame 节流（规格第 4.4 条）：
  * 拖动窗口时 resize 每秒能触发上百次，每次都重排会让主线程一直忙。
+ *
+ * 【列数没变也必须处理】列数只在 7 个断点上跳变，而**列宽是连续的**：
+ * 1440 → 1280 都是 5 列，但列宽从 278 变成 246（卡片 262 → 230）。
+ * 旧实现一上来就 `if (next === columnCount.value) return;`，
+ * 于是这种「同列数、不同列宽」的缩放完全被忽略：
+ *   · 卡片宽度变了，但 `cardW`（悬停浮层的宽度来源）还是旧值
+ *     —— 实测 1440→1280 后浮层仍是 262px，而卡片已缩到 230px；
+ *   · `measured` 里的实测高度对应旧列宽，也不会刷新。
+ * 现在按「列数变了」与「列数没变」分成两条路径。
  */
 function onResize() {
   if (rafId) return;
   rafId = requestAnimationFrame(() => {
     rafId = 0;
     const next = getColumnCount(window.innerWidth);
-    if (next === columnCount.value) return;
+    if (next === columnCount.value) {
+      // 同列数、列宽变了：清掉按旧列宽量到的实测高度，再走一次完整重建。
+      // 【为什么要 clear 而不是只更新宽度】实测高度是「图片高 + 装饰高」，
+      // 图片高与列宽成正比，列宽一变它就全过期，留着会让贪心分配按旧比例排布。
+      measured.clear();
+      rebuild();
+      return;
+    }
     columnCount.value = next;
     // 【必须清空 measured】它是 uid -> px，不含列宽维度。列数变了列宽必然变，
     // 旧高度全部失效。不清就会先拿过期值分一次列，虽然随后会被实测纠正，
@@ -634,8 +698,8 @@ onUnmounted(() => {
   popoverState.align = 'start';
   popoverState.top = 0;
   popoverState.left = 0;
-  popoverState.photoWidth = 0;
   popoverState.photoHeight = 0;
+  popoverState.width = 0;
 
   if (rafId) cancelAnimationFrame(rafId);
   rafId = 0;
@@ -852,6 +916,9 @@ let anchorBaseTop = 0;
 let anchorBaseLeft = 0;
 let anchorBaseScrollTop = 0;
 let anchorBaseScrollLeft = 0;
+/** 基准时刻锚点的视口坐标。滚动跟随用它的位移做差分（比 scrollTop 增量可靠，见 applyScrollShift）。 */
+let anchorBaseAnchorTop = 0;
+let anchorBaseAnchorLeft = 0;
 /** 滚动跟随的 rAF 句柄，0 表示空闲（用来把同帧内的多次 scroll 合并成一次写入）。 */
 let scrollShiftRaf = 0;
 /*
@@ -875,11 +942,10 @@ const popoverState = reactive({
   align: 'start',
   top: 0,
   left: 0,
-  // 照片区宽高（由 computePhotoBox 的预算算出），模板分别绑定到 max-width / max-height。
-  // 【为什么必须由 JS 决定而不是纯 CSS】预算依赖视口高度，而 CSS 拿不到；
-  // 更关键的是高度受限时【宽度也要一起缩】，只有成对给出 max-width + max-height 才能
-  // 让盒子保持照片真实宽高比（只给 max-height 会把照片压扁，见 computePhotoBox 注释）。
-  photoWidth: 0,
+  // 浮层总宽（含边框）= 卡片实宽，由 resolvePopoverWidth() 算出后写进内联 style。
+  // 【为什么宽度必须由 JS 决定】卡片宽度随列数变化（2~8 列），CSS px 里写不出来。
+  width: 0,
+  // 照片区高度，只用于给模板一个与 aspect-ratio 一致的兜底高度（不影响定位）。
   photoHeight: 0,
 });
 
@@ -935,11 +1001,14 @@ function writePopoverOffset(el, top, left) {
   }
 }
 
-const popoverStyle = computed(() => (
-  supportsTranslateProp()
-    ? { translate: `${popoverState.left}px ${popoverState.top}px` }
-    : { top: popoverState.top + 'px', left: popoverState.left + 'px' }
-));
+const popoverStyle = computed(() => {
+  // 宽度与位置一起走响应式：宽度变化是低频事件（打开 / 换卡 / 跨断点），
+  // 不像滚动那样每帧都发生，所以放这里不会引入 30 次/帧的样式重算。
+  const style = popoverState.width > 0 ? { width: popoverState.width + 'px' } : {};
+  return supportsTranslateProp()
+    ? { ...style, translate: `${popoverState.left}px ${popoverState.top}px` }
+    : { ...style, top: popoverState.top + 'px', left: popoverState.left + 'px' };
+});
 
 /**
  * 锚点与弹层之间的间距（参考站实测 22px）。
@@ -962,115 +1031,101 @@ const NAV_SAFE_TOP_NARROW = 88;
 const POPOVER_FALLBACK_VW = 320;
 
 /**
- * 悬停预览的照片显示宽度（px）。与 CSS 里 .card-popover 的 width 必须一致，
- * 否则 measurePopoverSize() 算出的宽度和实际渲染宽度对不上，横向定位会偏。
+ * 悬停预览的宽度来源：**跟卡片走**（不是固定像素）。
+ *
+ * 【为什么不再写死 320】用户要求「悬停出现的宽度和它的父页面一致」。
+ * 实测参考站资料卡是固定 288px，但那不是本项目的形态 —— 本项目的浮层显示的是
+ * 照片本身，跟卡片同宽才像「这张卡被放大」，也不会横跨盖住相邻列的卡片。
+ *
+ * 取的是**卡片实宽**（.card-shell 的 clientWidth），而不是列宽 —— 列上有
+ * padding-left: 1rem，列宽比卡片宽 16px，用列宽会让浮层左右各探出去 8px。
+ *
+ * 这个值由 recordCardWidth() 在每次渲染后写入（见那里的「为什么不能在渲染前读」），
+ * 每张卡都存了一份 cardW；缓存是为了兜住「卡片已滚出 DOM」的瞬间，宁可用旧值也不塌成 0。
+ * 具体实现在下方的 resolvePopoverWidth()，不是常量。
  */
-const POPOVER_PHOTO_WIDTH = 320;
 /**
  * 弹层底部信息条的高度（px）。必须与 CSS 里 .card-popover-foot 的 height 一致，
  * 否则算出的总高比实际少这一截，翻到锚点上方时会压到锚点上。
  */
 const POPOVER_FOOT_HEIGHT = 52;
-/**
- * 浮层最小可用高度（px）= 信息条 52 + 边框 2 + 照片至少留 120。
- * 【为什么需要它】方案 A 让高度服从「所在一侧预算」hMax = (vh-186)/2，
- * 但视口极矮时（手机横屏 844x390，hMax 只有 102px）预算会小于最小可用高度。
- * 此时只能允许高度突破预算、接受浮层与锚点重叠 —— 因为照片压到 48px 已无意义。
- * 换言之：不重叠这个不变量只在「预算 >= POPOVER_MIN_HEIGHT」时成立，这里如实写出边界。
- */
-const POPOVER_MIN_HEIGHT = POPOVER_FOOT_HEIGHT + 2 + 120;
+/* 【已删除 POPOVER_MIN_HEIGHT】
+ * 旧方案让高度服从「所在一侧预算」hMax = (vh-186)/2，视口极矮时（手机横屏 844x390，
+ * hMax 只有 102px）预算会小于最小可用高度，于是曾有 174px 的下限常量。
+ * 用户明确要求「悬停的卡面高度可以和照片自适应」，高度预算已整体取消，
+ * 该常量失去意义 —— 连同注释一起删掉，避免留下「看似有用实则零引用」的死代码。
+ * 高度现在完全由照片比例决定：见 computePhotoBox()。 */
+
+/** 当前浮层应该多宽：优先用这张卡自己的实宽，取不到就退回缓存/视口兜底。 */
+function resolvePopoverWidth() {
+  const vw = typeof window === 'undefined' ? 1440 : window.innerWidth;
+  const vwOk = vw > 0 ? vw : POPOVER_FALLBACK_VW;
+  const cardW = activeCard.value && activeCard.value.cardW > 0 ? activeCard.value.cardW : 0;
+  if (cardW) cachedCardWidth = cardW;
+  const want = cardW || cachedCardWidth || Math.min(320, vwOk - POPOVER_MARGIN * 2);
+  // 兜底：永远不许超出视口（极窄视口下卡片本身就可能贴近屏幕边缘）。
+  return Math.max(0, Math.min(want, vwOk - POPOVER_MARGIN * 2));
+}
 
 /**
  * 【宽高比失真的根源】照片区只用 max-height 限高时，盒子宽度【不会】跟着收缩：
  * 1 号照片 fw/fh = 374/560（0.668）在 1440x900 下算出 318x476，被 max-height 砍到
  * 318x303 —— 实际比例 1.05（接近正方），img 再被 object-fit: cover 裁成中间一条。
- * 所以高度受限时必须让宽度按同一比例一起缩：
- *   高度 H = min(可用宽 / ratio, maxPhoto, photoHeight)；宽 = H * ratio。
- * 本函数是「照片区盒子」的唯一权威计算，measurePopoverSize() 也用它的宽高，
- * JS 预算与 CSS 渲染因此不可能分裂。
+ * 正解是「高度由宽度和比例算出来，宽度不被任何东西压缩」：
+ *   宽度 = 卡片实宽 − 边框；高度 = 宽度 / ratio。
+ * 宽度定死之后，高度只有一解，比例天然不可能走样。
  *
- * 浮层总高不变（照片区高 + 信息条 + 边框），所以「不覆盖锚点 + 完整可见」的
- * 构造性推导原样成立，副作用只是浮层变窄。
+ * 【高度完全自适应，不设上限】用户明确要求「悬停的卡面高度可以和照片自适应」。
+ * 旧实现用 hMax = (vh-186)/2 压高度，导致同一张图在不同视口下高度不同、竖图永远被裁，
+ * 这正是上面那条失真的直接原因。现在照片区高度 = 宽度 / ratio，不再参与任何预算。
  *
  * @returns {{ ratio:number, photoWidth:number, photoHeight:number }}
- *   photoWidth / photoHeight 是照片区（= 浮层内宽）的尺寸，向上取整，
- *   与 CSS 的 aspect-ratio + max-height 组合结果逐像素一致（高 = 宽 / ratio）。
+ *   photoWidth / photoHeight 是照片区等于浮层内宽时的尺寸，
+ *   与 CSS 的 aspect-ratio 渲染结果逐像素一致（高 = 宽 / ratio）。
  */
 function computePhotoBox() {
-  const vw = typeof window === 'undefined' ? 1440 : window.innerWidth;
-  const vh = typeof window === 'undefined' ? 900 : window.innerHeight;
-  const vwOk = vw > 0 ? vw : POPOVER_FALLBACK_VW;
-  const vhOk = vh > 0 ? vh : 900;
-
   const card = activeCard.value;
   // 宽高比缺失或非法时退回 3:4（项目图片多为竖构图），避免 0 / NaN 让整层尺寸塌成 0。
   const ratio = card && card.fw > 0 && card.fh > 0 ? card.fw / card.fh : 3 / 4;
 
-  // 照片区可用宽度 = 浮层总宽（与 CSS 媒体查询同式）减去左右 1px 边框。
-  const width = Math.max(0, Math.min(POPOVER_PHOTO_WIDTH, vwOk - POPOVER_MARGIN * 2));
-  const photoMaxWidth = Math.max(1, width - 2);
+  // 照片区可用宽度 = 浮层总宽减去左右 1px 边框。
+  const photoMaxWidth = Math.max(1, resolvePopoverWidth() - 2);
 
-  // 高度上限：自然高上限（短竖图不至于遮太大）+ 视口比例 + 预算 hMax 扣掉信息条与边框。
-  const hMax = Math.max(POPOVER_MIN_HEIGHT, Math.floor((vhOk - 186) / 2));
-  const photoHeightCap = Math.max(1, Math.min(Math.round(vhOk * 0.6), 480, hMax - POPOVER_FOOT_HEIGHT - 2));
-
-  const naturalHeight = photoMaxWidth / ratio;
-  const photoHeight = Math.max(1, Math.min(naturalHeight, photoHeightCap));
-  // 高度没被限时宽就是可用宽；被限时宽等比缩（Math.ceil 让高度 >= 目标值，不会多裁一条）。
-  const photoWidth = Math.min(photoMaxWidth, Math.ceil(photoHeight * ratio));
-
+  // 高度没有第二约束：给定宽度与比例，高度唯一。
   return {
     ratio,
-    photoWidth: Math.round(photoWidth),
-    photoHeight: Math.ceil(photoWidth / ratio),
+    photoWidth: photoMaxWidth,
+    photoHeight: Math.ceil(photoMaxWidth / ratio),
   };
 }
 
 const clampNum = (v, min, max) => Math.max(min, Math.min(max, v));
 
 /**
- * 量悬停预览的显示尺寸：高度 = 照片高度上限 + 信息条 + 边框；宽度取 computePhotoBox 的
- * 照片区宽 + 边框（高度受限时照片区宽度已等比收缩，浮层随之变窄，不再是固定 320）。
+ * 量悬停预览的显示尺寸：宽度 = 卡片实宽，高度 = 照片区高度 + 信息条 + 边框。
  *
  * 【为什么必须在渲染前算出来】computePopoverPosition 要用高度判断「下方放不放得下」，
  * 否则得先渲染一次、量完再摆，第一帧会闪一下。
  * 照片高度由 activeCard 的 fw/fh 决定，所以每张图算出来都不一样。
  *
- * @returns {{ width:number, height:number }}
+ * @returns {{ width:number, height:number, natural:number, photoBox:object }}
  */
 function measurePopoverSize() {
-  const vw = typeof window === 'undefined' ? 1440 : window.innerWidth;
-  const vh = typeof window === 'undefined' ? 900 : window.innerHeight;
-  const vwOk = vw > 0 ? vw : POPOVER_FALLBACK_VW;
-
-  // 【尺寸唯一来源是 computePhotoBox】照片区宽高（高度受限时宽度等比收缩）由它算，
-  // 这里只负责把它加成「浮层总宽 / 总高」。完全解析计算，不读任何布局。
-  // 绝不使用 offsetHeight 回填：量到的是裁剪后的值，会把预算永久记小（棘轮效应）。
+  // 【尺寸唯一来源是 computePhotoBox】照片区宽高由它算，这里只负责把它加成
+  // 「浮层总宽 / 总高」。完全解析计算，不读任何布局。
+  // 绝不使用 offsetHeight 回填：量到的是图片未加载时的值，会把尺寸永久记错（棘轮效应）。
   const box = computePhotoBox();
-  // 与 CSS 里 @media (max-width:640px) 的 width: calc(100vw - 24px) 用同一公式。
-  // Math.max(0, ...)：视口极窄时别算出负数宽度，否则定位会翻到屏幕外。
-  // 【浮层宽度必须跟着照片区走，不能取两者的较大值】
-  // 曾经写成 `Math.max(box.photoWidth + 2, 满宽)`，本意是「别比照片还窄」，
-  // 但照片区高度受限时 box.photoWidth 会被等比缩到 171，而满宽是 318，
-  // Math.max 又把它撑回 318 —— 于是模板绑的 max-width:318px 与可用内宽【相等】，
-  // 等于没限制，竖图仍然被压成 318x303（比例 1.05）。
-  // 正解：高度受限时浮层整体变窄，宽度 = 照片区宽 + 左右边框。
-  const maxPopWidth = Math.max(0, Math.min(POPOVER_PHOTO_WIDTH, vwOk - POPOVER_MARGIN * 2));
-  const width = Math.min(maxPopWidth, box.photoWidth + 2);
+  const width = resolvePopoverWidth();
   const natural = Math.round(box.photoHeight + POPOVER_FOOT_HEIGHT + 2);
 
-  // 【方案 A：高度服从「所在一侧预算」，而不是把位置钳进视口】
-  // 浮层必须永不覆盖锚点：否则指针离开头像后立刻落进浮层，mouseleave 被浮层的
-  // mouseenter 抢先取消，浮层从此再也不会关闭（这就是实测到的「滚到底也关不掉」）。
-  // 但「不覆盖锚点」与「完整可见」在浮层高于两侧空间时【无解】——
-  // 唯一出路是让高度变小：H := min(自然高度, 预算)。
-  // 预算推导（A=40 锚点高、G=22 间距、M=12 边距、S=90 顶部安全区）：
-  //   spaceBelow(y) = vh - y - 74        spaceAbove(y) = y - 112
-  // 两侧同时不够的最坏锚点 y* = (vh - 38) / 2，此时可用空间 = (vh - 186) / 2。
-  // 取这个与侧别无关的全局上限，好处是高度只随视口变化、side 不会因高度抖动。
-  const hMax = Math.max(POPOVER_MIN_HEIGHT, Math.floor((vh - 186) / 2));
-  const height = Math.min(natural, hMax);
-  return { width, height, natural, photoBox: box };
+  // 【高度完全自适应：不再压到侧边预算里】
+  // 旧版为了「浮层永不覆盖锚点」把高度压成 H := min(自然高度, (vh-186)/2)，
+  // 代价是竖图永远被砍 1/3 左右、同一张图在不同视口高度不一致。
+  // 用户要求「卡面高度和照片自适应」，所以这里放开：高度就是照片自然高度。
+  // 副作用（已实测，见 记忆/04「第十一批」）：浮层可能高于锚点所在一侧的剩余空间，
+  // 于是允许覆盖或溢出视口 —— 但下面的 computePopoverPosition 仍会选「空间更大」的一侧，
+  // 把超出量压到最小。关闭链路另有一道不依赖几何的判据，不会因此死锁。
+  return { width, height: natural, natural, photoBox: box };
 }
 
 
@@ -1104,25 +1159,28 @@ function computePopoverPosition(rect, size) {
   // spaceAbove 同样扣安全区：否则「上方更宽裕」会高估，翻上去之后又被钳回来。
   const spaceAbove = rect.top - POPOVER_GAP - safeTop;
 
-  // 【翻转规则：选空间更大的一侧，保证一定放得下】
-  // measurePopoverSize 已把高度压到 hMax = (vh - 186) / 2 以内，而
-  //   spaceBelow + spaceAbove = (vh - y - 74) + (y - 112) = vh - 186 = 2 * hMax
-  // 恒成立（两项的 y 相互抵消），所以 max(spaceBelow, spaceAbove) >= hMax >= height。
-  // 也就是说【至少一侧一定放得下】，下面这个二选一必然命中，不需要任何兜底钳制。
+  // 【翻转规则：选空间更大的一侧，尽量少溢出】
+  // 旧版这里有一段「构造性推导」：measurePopoverSize 把高度压到 hMax = (vh-186)/2 以内，
+  // 而 spaceBelow + spaceAbove = vh - 186 恒成立，所以 max(...) >= hMax >= height，
+  // 二选一必然命中、不需要兜底。
+  //
+  // 【该推导已失效】高度不再受预算约束（用户要求「卡面高度和照片自适应」），
+  // 竖图浮层可以高于任何一侧的剩余空间。所以：
+  //   · side 仍取「真的放得下」的那一侧；两侧都放不下时取空间更大的一侧；
+  //   · 纵向仍不做钳制 —— 钳制会让浮层脱离锚点，「浮层跟着卡走」是这一层的核心语义。
+  // 结果：极矮视口或超长竖图下，浮层会溢出视口或被导航遮住。这是需求带来的已知权衡，
+  // 已写进 记忆/04「第十一批」，不当作缺陷。
   // 两边都用「相对锚点的绝对量」判断，不含 rect 自身位置，滚动不会让 side 抖动。
   let side;
   if (spaceBelow >= size.height) side = 'bottom';
   else if (spaceAbove >= size.height) side = 'top';
-  // 退化分支：hMax 被 POPOVER_MIN_HEIGHT 抬到预算之上（极矮视口，如 844x390）。
-  // 此时两侧都放不下，选空间更大的一侧，让溢出尽量少、且落在远离导航的一边。
+  // 两侧都放不下：选空间更大的一侧，让溢出尽量少、且落在远离导航的一边。
   else side = spaceAbove > spaceBelow ? 'top' : 'bottom';
 
-  // 纵向：直接贴边，不做任何钳制 —— 而且这里【不需要】钳制：
-  //   side=bottom: top + height = rect.bottom + 22 + height <= vh - 12  （由 height <= spaceBelow 推出）
-  //   side=top   : top         = rect.top - 22 - height >= 90 = safeTop （由 height <= spaceAbove 推出）
-  // 两个不变量都是【构造性成立】的，不是事后断言。
-  // 这也顺带保证了浮层永不覆盖锚点（间距恒为 22px），指针离开头像后不会掉进浮层，
-  // 关闭链路才能正常工作 —— 这是本函数存在的根本理由，不要为了「塞进视口」再加回钳制。
+  // 纵向：直接贴边，不做任何钳制。间距恒为 22px、随锚点逐像素移动。
+  // 【浮层仍不会「夹住」指针】side=bottom 时浮层顶边 = 锚点底边 + 22；
+  // side=top 时浮层底边 = 锚点顶边 - 22。无论高度多少，浮层与锚点之间恒有 22px 空隙，
+  // 指针从头像移出后不会「落进浮层内部」，关闭链路不依赖几何是否塞得下。
   const top = side === 'bottom' ? below : above;
 
   // 水平：与锚点左边缘对齐，右侧出界时先尝试整体左移（仍保持 start 对齐语义），
@@ -1140,12 +1198,9 @@ function computePopoverPosition(rect, size) {
     align,
     top: Math.round(top),
     left: Math.round(left),
-    // 照片区尺寸（border-box 内除信息条与边框）。模板把这两个数字分别写进
-    // max-width 与 max-height —— 必须成对给出：只给 max-height 的话 aspect-ratio
-    // 会被砍、宽度不跟着缩，照片就被压扁成接近正方形（本轮的 BUG）。
-    // width 取 size.photoBox（= computePhotoBox，同一事实源），不用 size.width - 2 反推，
-    // 因为 nextTick 校正时 size.width 会被替换成实测的 offsetWidth。
-    photoWidth: Math.max(0, Math.round(size.photoBox ? size.photoBox.photoWidth : size.width - 2)),
+    // 浮层总宽（含左右 1px 边框）= 卡片实宽，模板写进内联 width。
+    width: Math.max(0, Math.round(size.width)),
+    // 照片区高度只用于兜底展示；真实高度由 CSS aspect-ratio 从宽度算出。
     photoHeight: Math.max(0, Math.round(size.photoBox ? size.photoBox.photoHeight : size.height - POPOVER_FOOT_HEIGHT - 2)),
   };
 }
@@ -1159,8 +1214,12 @@ function positionPopover() {
 }
 
 /**
- * 记录「当前弹层位置」与「当前滚动位置」的对应关系。
- * 滚动跟随只需在这两个基准上做减法，不必再碰布局。
+ * 记录「当前弹层位置」与「锚点当前位置 + 滚动位置」的对应关系。
+ * 后续跟随只需在这组基准上做减法，不必重新算位置、也不必碰布局以外的量。
+ *
+ * 【为什么同时记 scrollTop 与锚点 rect】滚动跟随以锚点 rect 的位移为准（见
+ * applyScrollShift 的注释），scrollTop 只作为锚点脱离文档时的退化基准。
+ * 两套基准必须在同一时刻采样，否则一个用旧的、一个用新的，差值就是错的。
  */
 function captureScrollBase() {
   anchorBaseTop = popoverState.top;
@@ -1168,17 +1227,113 @@ function captureScrollBase() {
   const page = pageRef.value;
   anchorBaseScrollTop = page ? page.scrollTop : 0;
   anchorBaseScrollLeft = page ? page.scrollLeft : 0;
+  const anchor = popoverAnchor;
+  if (anchor && anchor.isConnected) {
+    const r = anchor.getBoundingClientRect();
+    anchorBaseAnchorTop = r.top;
+    anchorBaseAnchorLeft = r.left;
+  }
   syncPopoverDom();
 }
 
+/* ------------------------------------------------ 锚点移动跟随（悬停抬升） */
+
 /**
- * 滚动事件入口：只记一个 rAF，真正的位移计算推迟到下一帧。
- * 同一帧里多次 scroll 只会写一次 style，避免无谓的重复渲染。
+ * 浮层打开后【继续】跟着锚点走，用于吸收悬停带来的位移动画。
+ *
+ * 【为什么必须有这一层】卡片悬停时执行
+ *   .card-shell:hover { transform: translateY(-10px) scale(1.05) }
+ * 这条变换默认以卡片【中心】为原点，于是头像的位置会连续变化：
+ * 实测 844x390 下头像底边在 0.45s 内从 194.68 漂到 189.17（约 5.5px）。
+ * 浮层的位置却在打开那一刻就按当时（变换进行到一半）的矩形算好并锁死了，
+ * 结果就是「间距看起来是 20~25px 而不是 22px」，且每次打开偏的量都不一样 ——
+ * 实测同一个视口下不同次打开分别得到 22 / 23 / 25。
+ *
+ * 【为什么不用 observer 去追 transform】transform 不触发 layout，没有事件可听；
+ * 用 rAF 逐帧比对 rect 是唯一可靠的做法。代价可控：
+ *   · 只在浮层打开期间运行，关闭即取消；
+ *   · rect 未变时不做任何写入（静止帧写入次数 = 0）；
+ *   · 位置仍写 translate（合成层属性），不触发布局 —— 与滚动跟随同一机制。
+ *
+ * 【为什么用 rect 差值而不是重算位置】重算会读 measurePopoverSize 并可能改变 side，
+ * 悬停动画期间反复翻转会闪烁。这里只做「锚点移动了多少，浮层就平移多少」，
+ * side / 高度都不动，视觉上就是单纯贴合。
+ */
+let anchorFollowRaf = 0;
+let followLastTop = 0;
+let followLastLeft = 0;
+let staticFrames = 0;
+
+function stopAnchorFollow() {
+  if (anchorFollowRaf) cancelAnimationFrame(anchorFollowRaf);
+  anchorFollowRaf = 0;
+}
+
+function scheduleAnchorFollow() {
+  if (!anchorFollowRaf) anchorFollowRaf = requestAnimationFrame(followAnchorFrame);
+}
+
+function followAnchorFrame() {
+  anchorFollowRaf = 0;
+  const anchor = popoverAnchor;
+  if (!activeCard.value || !anchor || !anchor.isConnected) return;
+  if (popoverAnim.value === 'closing') return;
+  const r = anchor.getBoundingClientRect();
+  if (!r.width && !r.height) return;   // 脱离文档 / 被隐藏时 rect 全 0，别跟着乱跑
+  const page = pageRef.value;          // 同步滚动基准用（见下方 anchorBaseScrollTop）
+
+  // 相对「上一帧」的位移增量（纯算术，不重算定位）。
+  const dTop = Math.round(r.bottom) - followLastTop;
+  const dLeft = Math.round(r.left) - followLastLeft;
+  if (dTop || dLeft) {
+    followLastTop = Math.round(r.bottom);
+    followLastLeft = Math.round(r.left);
+    // 【同步基准，而不是直接叠加到已应用值】滚动跟随（applyScrollShift）用的是
+    // 「基准 + 锚点 rect 相对基准的位移」这套纯算术。如果这里只把增量加到
+    // scrollAppliedTop 上而不动基准，两路就会各算各的、互相覆盖 ——
+    // 实测表现为滚动过程中间距缓慢漂移（22→23→24→30）。
+    // 把这段位移记进基准（位置基准与锚点基准一起走），两条路径就收敛到同一个公式，
+    // 谁先跑都得到同一个结果，不会重复也不会漏。
+    anchorBaseTop += dTop;
+    anchorBaseLeft += dLeft;
+    anchorBaseAnchorTop += dTop;
+    anchorBaseAnchorLeft += dLeft;
+    if (page) {
+      anchorBaseScrollTop = page.scrollTop;
+      anchorBaseScrollLeft = page.scrollLeft;
+    }
+    const el = popoverRef.value;
+    if (el) {
+      scrollAppliedTop = Math.round(anchorBaseTop);
+      scrollAppliedLeft = Math.round(anchorBaseLeft);
+      writePopoverOffset(el, scrollAppliedTop, scrollAppliedLeft);
+    }
+  }
+  // 位移动画结束后自然停下：矩形连续静止 N 帧就不再排队。
+  if (staticFrames < 40) {
+    staticFrames = dTop || dLeft ? 0 : staticFrames + 1;
+    anchorFollowRaf = requestAnimationFrame(followAnchorFrame);
+  }
+}
+
+/**
+ * 滚动事件入口。
+ *
+ * 【为什么同步执行而不是排到下一帧】曾经这里写 `scrollShiftRaf = rAF(applyScrollShift)`，
+ * 于是滚动发生的那一帧里，锚点已经移动、浮层的 translate 却还是旧值 —— 实测
+ * 打开浮层后滚动 6px，第一帧间距从 22 变成 26，下一帧才回到 22。
+ * 也就是每次滚动起步都有一帧「浮层晚半拍」，正是本文件反复要消除的那种观感问题
+ * （参考站实测浮层位移恒等于锚点位移，没有延迟）。
+ *
+ * applyScrollShift 是【纯算术、不读布局】的（见其注释），同步执行不会有强制同步布局的代价；
+ * 同一帧内多次 scroll 由函数开头「增量已为 0 就不写」自然合并，不需要额外的 rAF 去重。
+ *
+ * 保留 scrollShiftRaf 变量与对应的 cancelAnimationFrame 是为了兼容「已被排队的旧帧」，
+ * 以及卸载时的清理 —— 它现在恒为 0。
  */
 function handleScrollChange() {
   if (!activeCard.value || !popoverAnchor) return;
-  if (scrollShiftRaf) return;
-  scrollShiftRaf = requestAnimationFrame(applyScrollShift);
+  applyScrollShift();
 }
 
 /**
@@ -1196,8 +1351,27 @@ function applyScrollShift() {
   const page = pageRef.value;
   const el = popoverRef.value;
   if (!page || !el) return;
-  const nextTop = Math.round(anchorBaseTop - (page.scrollTop - anchorBaseScrollTop));
-  const nextLeft = Math.round(anchorBaseLeft - (page.scrollLeft - anchorBaseScrollLeft));
+  let nextTop;
+  let nextLeft;
+  const anchor = popoverAnchor;
+  if (anchor.isConnected) {
+    // 【用锚点 rect 的实际位移，而不是 scrollTop 的增量】
+    // 两者在大多数情况下相等，但**不等价**：图片延迟加载、字体回流、
+    // 甚至滚动本身的亚像素吸附，都会让「容器滚了 6px」与「锚点在视口里移动 6px」出现偏差。
+    // 实测某次滚动中 scrollTop 稳定 +6，但锚点底边从 394.02 滑到 388.72（只动了 5.3），
+    // 间距于是随滚动一路从 22 掉到 15 —— 用 scrollTop 做基准必然产生这种累积漂移。
+    // rect 是浮层要对齐的**真实几何**，用它做差分不会累积误差。
+    const r = anchor.getBoundingClientRect();
+    // 锚点上移了 d（r.top 变小），浮层顶边也必须上移同样的 d，才能保持间距恒定。
+    // 所以是「基准 + 位移」，不是「基准 − 位移」：写成减法会让浮层朝反方向跑，
+    // 实测间距从 22 一路涨到 300。
+    nextTop = Math.round(anchorBaseTop + (r.top - anchorBaseAnchorTop));
+    nextLeft = Math.round(anchorBaseLeft + (r.left - anchorBaseAnchorLeft));
+  } else {
+    // 锚点已脱离文档（跨断点重建的瞬间）：退回按滚动量推算，等它回来再恢复精确跟随。
+    nextTop = Math.round(anchorBaseTop - (page.scrollTop - anchorBaseScrollTop));
+    nextLeft = Math.round(anchorBaseLeft - (page.scrollLeft - anchorBaseScrollLeft));
+  }
   // 【窄屏同样逐像素跟随 —— 2026-10 修正】
   // 曾经这里有一行 `if (window.innerWidth <= 640) return;`，理由是「窄屏弹层近似模态，
   // 跟着滚会飘走、难以点按」。但源站实测（390x844 真机 UA，documentElement 滚动）
@@ -1403,6 +1577,15 @@ function openPreview(anchor, card) {
   popoverAnim.value = 'opening';
   attachGlobalListeners();
 
+  // 【从这里开始逐帧贴住锚点】打开的那一刻卡片正处于 hover 抬升动画中途
+  // （translateY(-10px) scale(1.05)，0.45s 才停），头像还会继续移动几个像素。
+  // 记下「打开时的锚点底边/左边」作为 rAF 比对的基准，由 followAnchorFrame 吸收后续位移。
+  const openRect = anchor.getBoundingClientRect();
+  followLastTop = Math.round(openRect.bottom);
+  followLastLeft = Math.round(openRect.left);
+  staticFrames = 0;
+  scheduleAnchorFollow();
+
   // 渲染后按弹层真实宽度再校正一次（只校正横向）：
   // 【高度绝不回填】高度由 measurePopoverSize 的预算解析算出，是权威值。
   // 若在这里用 el.offsetHeight 覆盖，量到的必然是已被 max-height 裁过的值，
@@ -1429,6 +1612,10 @@ function openPreview(anchor, card) {
     }));
     // 校正后的位置才是后续滚动跟随的基准，必须重新记一次。
     captureScrollBase();
+    // 校正可能让位置整体动了一截，把 rAF 比对基准同步过来，否则下一帧会把它当成
+    // 「锚点移动了」再叠一次增量（重复位移）。
+    followLastTop = Math.round(rect.bottom);
+    followLastLeft = Math.round(rect.left);
   });
 }
 
@@ -1442,6 +1629,7 @@ function closePreview() {
   // 直接把 DOM 拆掉，绕开动画。否则 reduce 用户打开弹层后 Esc 关不掉，弹层会永久停留。
   if (prefersReducedMotion()) {
     detachGlobalListeners();
+    stopAnchorFollow();
     clearCloseTimer();
     activeCard.value = null;
     popoverAnim.value = 'idle';
@@ -1452,6 +1640,7 @@ function closePreview() {
   const anim = POPOVER_DURATION;
   popoverAnim.value = 'closing';
   detachGlobalListeners();
+  stopAnchorFollow();
   clearCloseTimer();
   closeTimer = setTimeout(() => {
     closeTimer = 0;
@@ -2566,7 +2755,8 @@ columns.value = assignColumns(columnCount.value);
    所以这段 scoped 样式对 body 下的弹层同样生效，不需要全局样式。
    ================================================================ */
 .card-popover {
-  /* 盒子模型：宽 320 是【含边框】的总宽，与脚本里的 POPOVER_PHOTO_WIDTH 一致 */
+  /* 盒子模型：宽度由 JS 内联给出（= 卡片实宽），border-box 保证边框不额外撑宽。
+     下面 320px 只是内联值缺失时（理论上不会发生）的兜底。 */
   box-sizing: border-box;
   position: fixed;
   /*
@@ -2705,32 +2895,20 @@ columns.value = assignColumns(columnCount.value);
 .card-popover-photo {
   position: relative;
   width: 100%;
+  /* 内联 aspect-ratio 之外的兜底：清单条目缺 w/h 时按 3:4（与 JS 侧 0.75 同源）。 */
   aspect-ratio: 3 / 4;
   /*
-   * 【变窄时居中】高度受限时脚本会把 max-width 缩到 高度 x 宽高比，盒子不再占满浮层内宽。
-   * 不居中则竖图贴左、右侧空出一条玻璃底，看起来像「照片没摆正」。
-   * 宽度没被限（自然高度下）时 auto 边距为 0，视觉与改动前完全一致。
-   */
-  margin-inline: auto;
-  /*
-   * 【必须限高，否则浮层会盖住锚点、关闭链直接断掉】
-   * 高度 = 宽度 / 宽高比，320 宽的竖构图会算出 400~430px，加上信息条就 ~480px。
-   * 而「不覆盖锚点」要求 高度 <= 该侧可用空间，两侧同时不够时无解 ——
-   * 唯一出路是把高度压下来（见 measurePopoverSize 的 hMax 推导）。
+   * 【高度不设任何上限，这是需求本身】
+   * 用户要求「悬停的卡面高度可以和照片自适应」。旧版这里绑了
+   * max-height: min(480px, calc(50dvh - 147px))，以及 JS 侧的 hMax=(vh-186)/2，
+   * 后果是竖图永远被砍掉一截、同一张图换个视口高度就变。
+   * 现在：宽度定死（= 卡片实宽）→ 高度 = 宽度 / 宽高比，唯一解，不可能走样。
    *
-   * 【max-height 现在由 JS 内联给出，不在这里写死】
-   * 因为预算 hMax = (vh - 186) / 2 依赖视口高度，CSS 拿不到锚点位置，
-   * 只能给出一个与视口无关的保守值，那必然在矮窗口下算错。
-   * 所以模板绑定 :style="{ maxHeight: popoverState.photoHeight + 'px' }"，
-   * 让 JS 与 CSS 用同一个数字，避免「JS 以为放得下、CSS 却裁掉」的分裂。
-   * 这里的 50dvh 只是内联值缺失时的兜底（与 hMax 同源，同样保守）。
-   * max-height 会和 aspect-ratio 打架吗？【会】—— aspect-ratio 只是建议尺寸，
-   * 一旦 max-height 更小，盒子高度按 max-height 收缩，而宽度【仍锁在可用内宽】，
-   * 实际宽高比就变成「满宽 / 限高」（竖图 ≈ 1.05，接近正方），object-fit: cover 再把图裁掉。
-   * 所以 max-width 必须与 max-height 成对绑定（见模板），高度受限时宽度等比收缩；
-   * cover 保留，仅用于宽高比数据异常（fw/fh 兜底值）时的极端边界，正常路径裁切量为 0。
+   * 【为什么不再需要 margin-inline: auto】照片区始终占满浮层内宽，不存在「变窄」的情况。
+   * 【为什么不再需要 max-width】宽度本身就是浮层内宽，没有更强的约束可加。
+   * 曾经这里靠「max-width + max-height 成对给出 + JS 等比缩宽度」来防失真，
+   * 那套机制只在「高度要受限」时才需要 —— 现在高度不受限，机制整体退场。
    */
-  max-height: min(480px, calc(50dvh - 147px));
   overflow: hidden;
   background: rgba(255, 255, 255, 0.06);
   flex: none;
@@ -2927,11 +3105,12 @@ columns.value = assignColumns(columnCount.value);
     padding-top: 88px;
   }
 
-  /* 窄屏弹层宽度必须与脚本的 measurePopoverSize() 用同一公式 min(320, 视口-24)，
-     否则 CSS 画 320px、脚本按更小值算定位，left 会偏出去。
-     border-radius 收小一点，免得在 320px 屏上几乎占满宽度时圆角显得过大。 */
+  /* 【不要再写死宽度】这里曾经是 width: calc(100vw - 24px)，
+     与脚本 min(320, 视口-24) 配对。现在浮层宽度统一等于「卡片实宽」，
+     由内联样式给出（resolvePopoverWidth），窄屏卡片本来就窄，
+     自然不需要再改成满屏 —— 写在这里反而会覆盖内联值。
+     border-radius 收小一点，免得窄屏上圆角相对显得过大。 */
   .card-popover {
-    width: calc(100vw - 24px);
     border-radius: 14px;
   }
 }
